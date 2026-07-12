@@ -1,0 +1,6 @@
+FastAPI
+anthropic
+uvicorn
+pdfplumber
+chromadb
+sqlAlchemy

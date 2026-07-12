@@ -1,0 +1,332 @@
+/* ============================================================
+   SEC Filing Intelligence - styles.css
+   White background, black foreground, minimal color for signal
+   ============================================================ */
+
+   * {
+    box-sizing: border-box;
+  }
+  
+  body {
+    margin: 0;
+    padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 Helvetica, Arial, sans-serif;
+    background-color: #ffffff;
+    color: #000000;
+    line-height: 1.5;
+  }
+  
+  /* ----- Header ----- */
+  header {
+    border-bottom: 1px solid #000000;
+    padding: 24px 32px;
+  }
+  
+  header h1 {
+    margin: 0 0 4px 0;
+    font-size: 24px;
+    font-weight: 600;
+    color: #000000;
+  }
+  
+  .subtitle {
+    margin: 0;
+    font-size: 14px;
+    color: #000000;
+  }
+  
+  /* ----- Main layout ----- */
+  main {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 32px;
+  }
+  
+  /* ----- Query section ----- */
+  .query-section {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 32px;
+  }
+  
+  #question {
+    width: 100%;
+    min-height: 80px;
+    padding: 12px;
+    font-family: inherit;
+    font-size: 15px;
+    color: #000000;
+    background-color: #ffffff;
+    border: 1px solid #000000;
+    border-radius: 0;
+    resize: vertical;
+  }
+  
+  #question:focus {
+    outline: 2px solid #000000;
+    outline-offset: -2px;
+  }
+  
+  #submit {
+    align-self: flex-start;
+    padding: 10px 24px;
+    font-family: inherit;
+    font-size: 15px;
+    font-weight: 600;
+    color: #ffffff;
+    background-color: #000000;
+    border: 1px solid #000000;
+    cursor: pointer;
+  }
+  
+  #submit:hover:not(:disabled) {
+    background-color: #333333;
+  }
+  
+  #submit:disabled {
+    background-color: #888888;
+    border-color: #888888;
+    cursor: not-allowed;
+  }
+  
+  /* ----- Response section ----- */
+  .response-section {
+    border-top: 1px solid #000000;
+    padding-top: 24px;
+  }
+  
+  .response-section.hidden {
+    display: none;
+  }
+  
+  /* ----- Confidence badge ----- */
+  .confidence-badge {
+    display: inline-block;
+    padding: 4px 12px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    color: #000000;
+    background-color: #ffffff;
+    border: 2px solid #000000;
+    margin-bottom: 16px;
+  }
+  
+  .conf-high {
+    border-color: #006600;
+    color: #006600;
+  }
+  
+  .conf-medium {
+    border-color: #b8860b;
+    color: #b8860b;
+  }
+  
+  .conf-low {
+    border-color: #cc4400;
+    color: #cc4400;
+  }
+  
+  .conf-insufficient {
+    border-color: #990000;
+    color: #990000;
+    background-color: #ffffff;
+  }
+  
+  /* ----- Answer text ----- */
+  .answer-text {
+    font-size: 17px;
+    line-height: 1.6;
+    color: #000000;
+    margin-bottom: 24px;
+    padding: 16px;
+    background-color: #ffffff;
+    border-left: 4px solid #000000;
+  }
+  
+  /* ----- Calculation block ----- */
+  .calculation {
+    margin-bottom: 24px;
+  }
+  
+  .calculation h3 {
+    font-size: 14px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin: 0 0 8px 0;
+    color: #000000;
+  }
+  
+  .calc-expr {
+    margin: 0;
+    padding: 12px 16px;
+    font-family: "SF Mono", Consolas, "Courier New", monospace;
+    font-size: 14px;
+    color: #000000;
+    background-color: #ffffff;
+    border: 1px solid #000000;
+    overflow-x: auto;
+    white-space: pre-wrap;
+  }
+  
+  /* ----- Warnings block ----- */
+  .warnings {
+    margin-bottom: 24px;
+  }
+  
+  .warnings h3 {
+    font-size: 14px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin: 0 0 8px 0;
+    color: #000000;
+  }
+  
+  .warning {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 10px 12px;
+    margin-bottom: 6px;
+    background-color: #ffffff;
+    border-left: 4px solid #000000;
+    border-top: 1px solid #cccccc;
+    border-right: 1px solid #cccccc;
+    border-bottom: 1px solid #cccccc;
+  }
+  
+  .warning-info {
+    border-left-color: #005580;
+  }
+  
+  .warning-warning {
+    border-left-color: #b8860b;
+  }
+  
+  .warning-error {
+    border-left-color: #990000;
+  }
+  
+  .warning-severity {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    color: #000000;
+    min-width: 70px;
+    padding-top: 2px;
+  }
+  
+  .warning-info .warning-severity {
+    color: #005580;
+  }
+  
+  .warning-warning .warning-severity {
+    color: #b8860b;
+  }
+  
+  .warning-error .warning-severity {
+    color: #990000;
+  }
+  
+  .warning-message {
+    font-size: 14px;
+    color: #000000;
+    line-height: 1.4;
+  }
+  
+  /* ----- Citations ----- */
+  .citations {
+    border: 1px solid #000000;
+    padding: 12px 16px;
+    background-color: #ffffff;
+  }
+  
+  .citations summary {
+    font-size: 14px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #000000;
+    cursor: pointer;
+    padding: 4px 0;
+  }
+  
+  .citations summary:hover {
+    color: #333333;
+  }
+  
+  .citations[open] summary {
+    margin-bottom: 12px;
+    border-bottom: 1px solid #000000;
+    padding-bottom: 8px;
+  }
+  
+  .citations-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    color: #000000;
+  }
+  
+  .citations-table thead {
+    border-bottom: 1px solid #000000;
+  }
+  
+  .citations-table th {
+    text-align: left;
+    padding: 8px 10px;
+    font-weight: 700;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #000000;
+    background-color: #ffffff;
+  }
+  
+  .citations-table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid #dddddd;
+    color: #000000;
+    vertical-align: top;
+  }
+  
+  .citations-table tr:last-child td {
+    border-bottom: none;
+  }
+  
+  .num-cell {
+    font-family: "SF Mono", Consolas, "Courier New", monospace;
+    text-align: right;
+    white-space: nowrap;
+  }
+  
+  .citations-table a {
+    color: #000000;
+    text-decoration: underline;
+  }
+  
+  .citations-table a:hover {
+    color: #333333;
+    text-decoration: none;
+  }
+  
+  /* ----- Responsive ----- */
+  @media (max-width: 640px) {
+    main {
+      padding: 20px 16px;
+    }
+    header {
+      padding: 20px 16px;
+    }
+    .citations-table {
+      font-size: 12px;
+    }
+    .citations-table th,
+    .citations-table td {
+      padding: 6px 8px;
+    }
+  }

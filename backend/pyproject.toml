@@ -1,0 +1,14 @@
+[project]
+name = "backend"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "anthropic>=0.116.0",
+    "chromadb>=1.5.9",
+    "fastapi>=0.139.0",
+    "pdfplumber>=0.11.10",
+    "sqlalchemy>=2.0.51",
+    "uvicorn>=0.51.0",
+]

@@ -1,0 +1,9 @@
+.env
+.env.*
+__pycache__/
+*.pyc
+.venv/
+app/store/fact_store.db
+app/store/chroma_data/
+app/docs/
+app/ingest/pdfs/
