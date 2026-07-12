@@ -74,8 +74,12 @@ def verify(
             ))
             confidence = 'medium' if confidence == 'high' else confidence
  
-    # Check 7: sanity band on computed growth rates
-    if computed is not None and abs(computed) > 5000:
+    # Check 7: sanity band on computed growth rates. Only applies to
+    # growth_calc, where `computed` is a percentage. For comparison,
+    # `compute()` returns a raw dollar delta (see numerical_reasoner.py),
+    # and a multi-billion-dollar delta is normal, not a scale error; the
+    # same numeric threshold does not mean the same thing for both.
+    if plan.question_type == 'growth_calc' and computed is not None and abs(computed) > 5000:
         warnings.append(Warning(
             severity='warning',
             message=f'Computed growth rate of {computed:.1f}% is unusually large; ' +

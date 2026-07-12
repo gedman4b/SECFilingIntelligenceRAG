@@ -1,8 +1,9 @@
 # Deterministic. No LLM. This is the stage that prevents hallucination by construction.
 from app.schemas import QueryPlan, Fact, Period
 from app.store.db import get_conn
+from app.ingest.canonicalizer import resolve_canonical_metric
 from typing import List
- 
+
 def retrieve_facts(plan: QueryPlan) -> List[Fact]:
     if not plan.metric_canonical_id and not plan.metric_natural_language:
         return []
@@ -51,3 +52,4 @@ def retrieve_facts(plan: QueryPlan) -> List[Fact]:
                 row_id=r['row_id'],
                 ambiguity_flags=(r['ambiguity_flags'] or '').split(',') if r['ambiguity_flags'] else [],
             ))
+    return results
