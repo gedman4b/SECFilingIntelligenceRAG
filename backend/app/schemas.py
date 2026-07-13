@@ -26,6 +26,9 @@ class Period(BaseModel):
     # full-year figure. quarter is never None when is_ytd is True.
     is_ytd: bool = False
  
+class QueryRequest(BaseModel):
+    question: str
+
 class QueryPlan(BaseModel):
     question_type: QuestionType
     company_ticker: Optional[str] = None

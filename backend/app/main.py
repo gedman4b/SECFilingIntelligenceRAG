@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from app.schemas import QueryPlan, QueryResponse, Fact
+from app.schemas import QueryPlan, QueryRequest, QueryResponse, Fact
 from app.agents.planner import plan_query
 from app.agents.fact_retriever import retrieve_facts, resolve_preferred_facts
 from app.agents.numerical_reasoner import compute
@@ -18,7 +18,9 @@ app.add_middleware(
 )
  
 @app.post('/query', response_model=QueryResponse)
-def query(question: str) -> QueryResponse:
+def query(request: QueryRequest) -> QueryResponse:
+    question = request.question
+
     # Stage A: Plan
     plan: QueryPlan = plan_query(question)
  
