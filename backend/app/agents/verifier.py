@@ -1,10 +1,16 @@
 """
 The Verifier is the trust boundary. Every check here corresponds to a specific failure mode from the previous system.
 """
+import logging
+
 from app.schemas import QueryPlan, Fact, Warning
 from app.store.vector_store import ProsePassage
+from app.instrumentation import log_latency
 from typing import List, Tuple, Optional
 
+log = logging.getLogger(__name__)
+
+@log_latency(log)
 def verify(
     question: str,
     plan: QueryPlan,
@@ -14,7 +20,7 @@ def verify(
 ) -> Tuple[List[Warning], str]:
     warnings = []
     confidence = 'high'
- 
+
     # Check 1: did the plan itself have ambiguity?
     if plan.ambiguity_flags:
         for flag in plan.ambiguity_flags:
@@ -23,7 +29,7 @@ def verify(
                 message=f'Question interpretation uncertain: {flag}',
             ))
         confidence = 'medium'
- 
+
     # Check 2: was any requested fact missing?
     if plan.question_type in ('numeric_lookup', 'growth_calc', 'comparison'):
         if not facts:
@@ -31,6 +37,7 @@ def verify(
                 severity='error',
                 message='No matching facts found in the corpus for this question.',
             ))
+            log.info("question_type=%s -> confidence=insufficient_data (no facts)", plan.question_type)
             return warnings, 'insufficient_data'
  
     # Check 3: period alignment
@@ -96,6 +103,7 @@ def verify(
                 severity='error',
                 message='No relevant narrative passages found in the corpus for this question.',
             ))
+            log.info("question_type=narrative -> confidence=insufficient_data (no passages)")
             return warnings, 'insufficient_data'
 
     # Check 9: the same metric+period sourced from more than one table.
@@ -158,4 +166,8 @@ def verify(
                 ),
             ))
 
+    log.info(
+        "question_type=%s, %d facts -> confidence=%s (%d warnings)",
+        plan.question_type, len(facts), confidence, len(warnings),
+    )
     return warnings, confidence

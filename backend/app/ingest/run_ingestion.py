@@ -64,6 +64,7 @@ from app.ingest.canonicalizer import canonicalize_facts
 from app.ingest.fact_extractor import FilingContext, extract_facts_from_tables
 from app.ingest.pdf_parser import ProseSection, parse_filing
 from app.ingest.table_classifier import classify_tables
+from app.instrumentation import log_latency
 from app.store.db import (
     FilingRecord,
     ProseChunkRecord,
@@ -141,6 +142,7 @@ FILINGS: List[FilingSpec] = [
 # Per-filing ingestion
 # =============================================================================
 
+@log_latency(log)
 def ingest_filing(spec: FilingSpec, conn, chroma_collection) -> None:
     """Run the full offline pipeline for one filing and store the results.
 

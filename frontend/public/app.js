@@ -42,7 +42,7 @@ function renderResponse(data) {
   confidenceBadge.className = 'confidence-badge ' + c.cls;
   confidenceBadge.textContent = c.text;
  
-  answerText.textContent = data.answer_text;
+  answerText.innerHTML = renderMarkdownLite(data.answer_text);
  
   // Calculation block
   if (data.computation_expression) {
@@ -93,4 +93,58 @@ function escapeHtml(s) {
   return s.replace(/[&<>"']/g, ch => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   }[ch]));
+}
+
+// The Answer Composer's narrative is Markdown-ish prose (headers, bold,
+// bullet lists). Escapes first, then recognizes only that small subset
+// against the already-escaped text, so no LLM output is ever interpreted
+// as HTML: a stray "<script>" in an answer renders as the literal text
+// "<script>", never as a tag.
+function renderMarkdownLite(raw) {
+  const lines = escapeHtml(raw).split('\n');
+  const htmlParts = [];
+  let paragraphBuffer = [];
+  let listBuffer = [];
+
+  function flushParagraph() {
+    if (paragraphBuffer.length) {
+      htmlParts.push('<p>' + paragraphBuffer.join(' ') + '</p>');
+      paragraphBuffer = [];
+    }
+  }
+  function flushList() {
+    if (listBuffer.length) {
+      htmlParts.push('<ul>' + listBuffer.map(item => `<li>${item}</li>`).join('') + '</ul>');
+      listBuffer = [];
+    }
+  }
+  function inlineFormat(s) {
+    return s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  }
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const headerMatch = trimmed.match(/^(#{1,3})\s+(.*)$/);
+    const bulletMatch = trimmed.match(/^[-*]\s+(.*)$/);
+
+    if (headerMatch) {
+      flushParagraph();
+      flushList();
+      const level = headerMatch[1].length + 2; // # -> h3, ## -> h4, ### -> h5
+      htmlParts.push(`<h${level}>${inlineFormat(headerMatch[2])}</h${level}>`);
+    } else if (bulletMatch) {
+      flushParagraph();
+      listBuffer.push(inlineFormat(bulletMatch[1]));
+    } else if (trimmed === '') {
+      flushParagraph();
+      flushList();
+    } else {
+      flushList();
+      paragraphBuffer.push(inlineFormat(trimmed));
+    }
+  }
+  flushParagraph();
+  flushList();
+
+  return htmlParts.join('');
 }

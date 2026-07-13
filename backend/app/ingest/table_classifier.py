@@ -39,6 +39,7 @@ import anthropic
 from pydantic import BaseModel
 
 from app.ingest.pdf_parser import ParsedTable
+from app.instrumentation import log_latency
 
 log = logging.getLogger(__name__)
 
@@ -98,6 +99,7 @@ Rules:
 # Public entry points
 # =============================================================================
 
+@log_latency(log)
 def classify_table(table: ParsedTable) -> TableClassification:
     """Classify a single parsed table into the offline-pipeline taxonomy.
 

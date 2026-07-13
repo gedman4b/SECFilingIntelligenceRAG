@@ -1,9 +1,15 @@
 # Deterministic. No LLM. This is the stage that prevents hallucination by construction.
+import logging
+
 from app.schemas import QueryPlan, Fact, Period
 from app.store.db import get_conn
 from app.ingest.canonicalizer import resolve_canonical_metric
+from app.instrumentation import log_latency
 from typing import List
 
+log = logging.getLogger(__name__)
+
+@log_latency(log)
 def retrieve_facts(plan: QueryPlan) -> List[Fact]:
     if not plan.metric_canonical_id and not plan.metric_natural_language:
         return []
@@ -84,6 +90,10 @@ def retrieve_facts(plan: QueryPlan) -> List[Fact]:
             for fact, row in zip(period_facts, rows):
                 fact.is_preferred_source = row['table_richness'] == richest
         results.extend(period_facts)
+    log.info(
+        "plan(company=%s, metric=%s, periods=%d) -> %d facts",
+        plan.company_ticker, metric_id, len(plan.periods), len(results),
+    )
     return results
 
 

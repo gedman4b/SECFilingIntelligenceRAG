@@ -2,11 +2,15 @@
 The Composer uses an LLM to narrate the response, but is given only pre-verified facts and computed values. 
 It cannot introduce arithmetic error or hallucinate values because it does not have access to filing content or a calculator.
 """
+import logging
+
 import anthropic
 from app.schemas import QueryResponse, Fact, Warning, QueryPlan
 from app.store.vector_store import ProsePassage
+from app.instrumentation import log_latency
 from typing import List, Optional
 
+log = logging.getLogger(__name__)
 client = anthropic.Anthropic()
 
 COMPOSE_SYSTEM = '''You are composing an answer to a financial question.
@@ -25,6 +29,7 @@ You MUST:
 8. Never claim precision the source does not have.
 '''
 
+@log_latency(log)
 def compose_answer(
     question: str,
     plan: QueryPlan,
@@ -39,6 +44,7 @@ def compose_answer(
         answer_text = ('I cannot answer this question from the available filings. ' +
                        'Reason(s): ' + '; '.join(w.message for w in warnings
                        if w.severity == 'error'))
+        log.info("confidence=insufficient_data -> composed without an LLM call")
         return QueryResponse(
             answer_text=answer_text,
             raw_facts=facts,
@@ -83,6 +89,10 @@ def compose_answer(
         'period': f'{f.period.year} Q{f.period.quarter}' if f.period.quarter else str(f.period.year),
     } for f in facts]
  
+    log.info(
+        "confidence=%s, %d facts, %d prose passages -> %d citations",
+        confidence, len(facts), len(prose), len(citations),
+    )
     return QueryResponse(
         answer_text=response.content[0].text,
         raw_facts=facts,

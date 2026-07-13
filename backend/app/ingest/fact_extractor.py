@@ -43,6 +43,7 @@ from pydantic import BaseModel, ValidationError, field_validator, model_validato
 
 from app.ingest.pdf_parser import ParsedTable
 from app.ingest.table_classifier import TableCategory, TableClassification, render_table_as_text
+from app.instrumentation import log_latency
 
 log = logging.getLogger(__name__)
 
@@ -186,6 +187,7 @@ Rules:
 # Public entry points
 # =============================================================================
 
+@log_latency(log)
 def extract_facts(
     table: ParsedTable,
     classification: TableClassification,

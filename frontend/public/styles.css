@@ -145,7 +145,46 @@
     background-color: #ffffff;
     border-left: 4px solid #000000;
   }
-  
+
+  .answer-text p {
+    margin: 0 0 12px 0;
+  }
+
+  .answer-text p:last-child,
+  .answer-text ul:last-child {
+    margin-bottom: 0;
+  }
+
+  .answer-text h3,
+  .answer-text h4,
+  .answer-text h5 {
+    font-size: 14px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin: 16px 0 8px 0;
+    color: #000000;
+  }
+
+  .answer-text h3:first-child,
+  .answer-text h4:first-child,
+  .answer-text h5:first-child {
+    margin-top: 0;
+  }
+
+  .answer-text ul {
+    margin: 0 0 12px 0;
+    padding-left: 20px;
+  }
+
+  .answer-text li {
+    margin-bottom: 4px;
+  }
+
+  .answer-text strong {
+    font-weight: 700;
+  }
+
   /* ----- Calculation block ----- */
   .calculation {
     margin-bottom: 24px;

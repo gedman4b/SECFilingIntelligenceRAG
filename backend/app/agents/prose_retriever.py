@@ -23,12 +23,14 @@ from typing import List
 
 from app.schemas import QueryPlan
 from app.store.vector_store import ProsePassage, query_prose
+from app.instrumentation import log_latency
 
 log = logging.getLogger(__name__)
 
 DEFAULT_N_RESULTS = 5
 
 
+@log_latency(log)
 def retrieve_prose(plan: QueryPlan, question: str) -> List[ProsePassage]:
     """Retrieve narrative passages relevant to a natural-language question.
 

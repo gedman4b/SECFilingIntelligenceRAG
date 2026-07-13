@@ -12,9 +12,13 @@ registry lives in ingest/canonicalizer.py, not here, and agents/fact_retriever.p
 metric_natural_language against that registry deterministically. Teaching the Planner the full registry inline
 would duplicate a registry that changes independently of this prompt.
 """
+import logging
+
 import anthropic
 from app.schemas import QueryPlan, QuestionType, Period
+from app.instrumentation import log_latency
 
+log = logging.getLogger(__name__)
 client = anthropic.Anthropic()
 
 SYSTEM_PROMPT = '''You classify SEC filing questions into structured plans.
@@ -38,6 +42,7 @@ PLAN_TOOL = {
     'input_schema': QueryPlan.model_json_schema(),
 }
 
+@log_latency(log)
 def plan_query(question: str) -> QueryPlan:
     try:
         response = client.messages.create(
@@ -49,10 +54,15 @@ def plan_query(question: str) -> QueryPlan:
             messages=[{'role': 'user', 'content': question}],
         )
         tool_use = next(b for b in response.content if b.type == 'tool_use')
-        return QueryPlan(**tool_use.input)
+        plan = QueryPlan(**tool_use.input)
     except Exception as e:
         # Fail closed: unknown plan instead of guessing
-        return QueryPlan(
+        plan = QueryPlan(
             question_type=QuestionType.UNKNOWN,
             ambiguity_flags=[f'plan_parse_failed: {e}'],
         )
+    log.info(
+        "question=%r -> question_type=%s, company=%s, metric=%r",
+        question, plan.question_type.value, plan.company_ticker, plan.metric_natural_language,
+    )
+    return plan

@@ -1,3 +1,6 @@
+import logging
+import time
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from app.schemas import QueryPlan, QueryRequest, QueryResponse, Fact
@@ -7,7 +10,16 @@ from app.agents.numerical_reasoner import compute
 from app.agents.prose_retriever import retrieve_prose
 from app.agents.verifier import verify
 from app.agents.answer_composer import compose_answer
- 
+
+# Every agent and ingestion module logs at INFO via its own
+# logging.getLogger(__name__), but nothing calls basicConfig() -- without a
+# handler on the root logger, those calls go nowhere. main.py is the actual
+# process entry point when running under uvicorn (unlike the CLI scripts,
+# which each call basicConfig() in their own __main__ block), so it owns
+# this instead.
+logging.basicConfig(level=logging.INFO, format='%(levelname)s %(name)s: %(message)s')
+log = logging.getLogger(__name__)
+
 app = FastAPI(title='SEC Filing Intelligence')
 app.add_middleware(
     CORSMiddleware,
@@ -20,6 +32,7 @@ app.add_middleware(
 @app.post('/query', response_model=QueryResponse)
 def query(request: QueryRequest) -> QueryResponse:
     question = request.question
+    request_start = time.perf_counter()
 
     # Stage A: Plan
     plan: QueryPlan = plan_query(question)
@@ -57,6 +70,11 @@ def query(request: QueryRequest) -> QueryResponse:
         prose=prose,
         warnings=warnings,
         confidence=confidence,
+    )
+    log.info(
+        "question=%r -> question_type=%s, confidence=%s, total latency=%.1fms",
+        question, plan.question_type.value, confidence,
+        (time.perf_counter() - request_start) * 1000,
     )
     return response
  
