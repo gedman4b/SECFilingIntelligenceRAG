@@ -98,4 +98,39 @@ def verify(
             ))
             return warnings, 'insufficient_data'
 
+    # Check 9: the same metric+period sourced from more than one table.
+    # SEC filings routinely restate primary-statement figures elsewhere
+    # (MD&A commentary, footnotes), and the Fact Retriever's query has no
+    # preference logic -- it returns every matching row. When every source
+    # agrees, that is extra corroborating evidence, not a problem. When
+    # they disagree, the system has no principled way to pick a winner and
+    # must fail closed rather than silently citing whichever row SQLite
+    # happened to return first.
+    grouped: dict = {}
+    for f in facts:
+        key = (f.metric_canonical_id, f.period.year, f.period.quarter)
+        grouped.setdefault(key, []).append(f)
+    for (metric_id, year, quarter), group in grouped.items():
+        distinct_tables = {g.table_id for g in group}
+        if len(distinct_tables) <= 1:
+            continue
+        distinct_values = {g.value for g in group}
+        if len(distinct_values) > 1:
+            warnings.append(Warning(
+                severity='error',
+                message=(
+                    f'{metric_id} Y{year}Q{quarter}: conflicting values across '
+                    f'{len(distinct_tables)} source tables: {sorted(distinct_values)}'
+                ),
+            ))
+            confidence = 'insufficient_data'
+        else:
+            warnings.append(Warning(
+                severity='info',
+                message=(
+                    f'{metric_id} Y{year}Q{quarter}: corroborated by '
+                    f'{len(distinct_tables)} source tables (values agree).'
+                ),
+            ))
+
     return warnings, confidence
