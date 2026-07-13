@@ -18,6 +18,13 @@ class Period(BaseModel):
     year: int
     quarter: Optional[int] = None  # None = full year
     is_ttm: bool = False
+    # True when this period is a year-to-date cumulative figure through the
+    # stated quarter (e.g. "six months ended"), not the discrete quarter
+    # itself and not the full year. A 10-Q's condensed statements routinely
+    # report both a discrete quarter and a YTD column side by side; without
+    # this flag both would collide under quarter=None with the true
+    # full-year figure. quarter is never None when is_ytd is True.
+    is_ytd: bool = False
  
 class QueryPlan(BaseModel):
     question_type: QuestionType
@@ -42,6 +49,15 @@ class Fact(BaseModel):
     table_id: str
     row_id: int
     ambiguity_flags: List[str] = Field(default_factory=list)
+    # True when this fact's source table resolves more distinct canonical
+    # metrics than any other table contributing to the same (metric,
+    # period): empirically, the true primary financial statement resolves
+    # many metrics from one table, while MD&A commentary and footnotes that
+    # happen to restate the same figure resolve only one or two. Used to
+    # pick a single citation among multiple agreeing sources without
+    # suppressing them from the Verifier's conflict check (Check 9), which
+    # still needs to see every source, agreeing or not.
+    is_preferred_source: bool = False
  
 class Warning(BaseModel):
     severity: Literal['info', 'warning', 'error']

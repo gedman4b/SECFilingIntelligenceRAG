@@ -307,7 +307,7 @@ def canonicalize_facts(
 if __name__ == "__main__":
     import argparse
 
-    from app.ingest.fact_extractor import extract_facts_from_tables
+    from app.ingest.fact_extractor import FilingContext, extract_facts_from_tables
     from app.ingest.pdf_parser import parse_filing
     from app.ingest.table_classifier import classify_tables
 
@@ -321,12 +321,19 @@ if __name__ == "__main__":
         help="Stable identifier, e.g. TSLA-10K-2025-12-31",
     )
     ap.add_argument("--company-ticker", required=True, help="e.g. TSLA")
+    ap.add_argument("--form-type", required=True, help="e.g. 10-K, 10-Q, 10-K/A")
+    ap.add_argument("--fiscal-year", required=True, type=int)
+    ap.add_argument("--fiscal-quarter", type=int, default=None, help="Omit for a 10-K")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
     parsed = parse_filing(args.pdf_path, args.filing_id)
     classifications = classify_tables(parsed.tables)
-    extracted = extract_facts_from_tables(parsed.tables, classifications)
+    filing_context = FilingContext(
+        form_type=args.form_type, fiscal_year=args.fiscal_year,
+        fiscal_quarter=args.fiscal_quarter,
+    )
+    extracted = extract_facts_from_tables(parsed.tables, classifications, filing_context)
     canonicalized = canonicalize_facts(extracted, args.company_ticker)
     print(json.dumps([r.model_dump() for r in canonicalized], indent=2))

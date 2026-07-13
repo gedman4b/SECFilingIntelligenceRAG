@@ -61,7 +61,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from app.ingest.canonicalizer import canonicalize_facts
-from app.ingest.fact_extractor import extract_facts_from_tables
+from app.ingest.fact_extractor import FilingContext, extract_facts_from_tables
 from app.ingest.pdf_parser import ProseSection, parse_filing
 from app.ingest.table_classifier import classify_tables
 from app.store.db import (
@@ -166,7 +166,11 @@ def ingest_filing(spec: FilingSpec, conn, chroma_collection) -> None:
     ))
 
     classifications = classify_tables(parsed.tables)
-    extracted = extract_facts_from_tables(parsed.tables, classifications)
+    filing_context = FilingContext(
+        form_type=spec.form_type, fiscal_year=spec.fiscal_year,
+        fiscal_quarter=spec.fiscal_quarter,
+    )
+    extracted = extract_facts_from_tables(parsed.tables, classifications, filing_context)
     canonicalized = canonicalize_facts(extracted, spec.company_ticker)
     for record in canonicalized:
         insert_fact(conn, record)

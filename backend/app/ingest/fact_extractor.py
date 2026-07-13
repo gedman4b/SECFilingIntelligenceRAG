@@ -39,7 +39,7 @@ import logging
 from typing import List, Optional
 
 import anthropic
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, ValidationError, field_validator, model_validator
 
 from app.ingest.pdf_parser import ParsedTable
 from app.ingest.table_classifier import TableCategory, TableClassification, render_table_as_text
@@ -59,6 +59,28 @@ EXTRACTION_MAX_TOKENS = 16000
 
 
 # =============================================================================
+# Filing-level context
+# =============================================================================
+
+class FilingContext(BaseModel):
+    """Filing-level metadata needed to disambiguate period columns that a
+    table's own headers don't state explicitly.
+
+    A 10-Q's condensed statements routinely show bare-year column headers
+    (e.g. "2026 2025") with no "Three Months Ended" qualifier anywhere in
+    the table itself; that qualifier sits in surrounding page text that
+    pdf_parser.py's caption heuristic does not reliably capture. Rather
+    than have the LLM guess from ambiguous in-table text, the orchestrator
+    already knows the filing's form type and fiscal period with certainty
+    (read from the filing's cover page, see ingest/run_ingestion.py) and
+    passes it in directly.
+    """
+    form_type: str  # '10-K' | '10-Q' | '10-K/A' | '10-Q/A'
+    fiscal_year: int
+    fiscal_quarter: Optional[int] = None  # None for a 10-K
+
+
+# =============================================================================
 # Output schema
 # =============================================================================
 
@@ -69,6 +91,7 @@ class ExtractedFact(BaseModel):
     year: int
     quarter: Optional[int] = None  # None = full year / period-to-date
     is_ttm: bool = False
+    is_ytd: bool = False
     value: float
     units: str
     is_gaap: bool = True
@@ -90,6 +113,7 @@ class _RawFactRow(BaseModel):
     year: int
     quarter: Optional[int] = None
     is_ttm: bool = False
+    is_ytd: bool = False
     value: float
     units: str
     is_gaap: bool = True
@@ -116,6 +140,12 @@ class _RawFactRow(BaseModel):
             raise ValueError("units must not be blank")
         return v
 
+    @model_validator(mode="after")
+    def _ytd_requires_quarter(self) -> "_RawFactRow":
+        if self.is_ytd and self.quarter is None:
+            raise ValueError("is_ytd=true requires a non-null quarter (the ending quarter of the YTD period)")
+        return self
+
 
 # =============================================================================
 # Prompt
@@ -135,8 +165,9 @@ fields:
   "row_id": the 0-indexed row number in the table as given,
   "metric_raw_label": the exact line-item label text, e.g. "Total revenues",
   "year": the four-digit fiscal year the value covers, as an integer,
-  "quarter": 1, 2, 3, or 4 if the value is for a specific quarter, or null for a full fiscal year or year-to-date figure,
+  "quarter": 1, 2, 3, or 4 if the value covers that fiscal quarter (whether alone or as part of a year-to-date range ending in it), or null only for a full fiscal year figure,
   "is_ttm": true only if the value is explicitly a trailing-twelve-month figure, else false,
+  "is_ytd": true if the value is a year-to-date cumulative figure (e.g. "six months ended", "nine months ended") rather than a single discrete quarter or a full fiscal year, else false. When true, "quarter" is the ending quarter of the cumulative period, e.g. "six months ended June 30" is quarter=2, is_ytd=true,
   "value": the numeric value as a JSON number (strip "$" and ",", parentheses mean negative),
   "units": one of "USD_millions", "USD_thousands", "USD", "percent", "shares_millions", "shares_thousands", "shares", "per_share",
   "is_gaap": false only if the row label itself says "non-GAAP" or "adjusted", or the table is a non-GAAP reconciliation and this is the adjusted figure, else true,
@@ -158,6 +189,7 @@ Rules:
 def extract_facts(
     table: ParsedTable,
     classification: TableClassification,
+    filing_context: FilingContext,
 ) -> List[ExtractedFact]:
     """Extract numeric facts from one classified table.
 
@@ -165,6 +197,9 @@ def extract_facts(
         table: A table extracted by ingest/pdf_parser.py.
         classification: The category assigned by ingest/table_classifier.py
             for this same table.
+        filing_context: Form type and fiscal period of the source filing,
+            used to disambiguate bare-year column headers instead of
+            leaving the LLM to guess from in-table text alone.
 
     Returns:
         Validated facts with full provenance. Empty if the table is
@@ -177,6 +212,7 @@ def extract_facts(
         return []
 
     user_msg = (
+        f"{_period_guidance(filing_context)}\n\n"
         f"Table ID: {table.table_id}\n"
         f"Page: {table.page_number}\n"
         f"Classified category: {classification.category.value}\n"
@@ -218,6 +254,7 @@ def extract_facts(
             year=candidate.year,
             quarter=candidate.quarter,
             is_ttm=candidate.is_ttm,
+            is_ytd=candidate.is_ytd,
             value=candidate.value,
             units=candidate.units,
             is_gaap=candidate.is_gaap,
@@ -245,6 +282,7 @@ def extract_facts(
 def extract_facts_from_tables(
     tables: List[ParsedTable],
     classifications: List[TableClassification],
+    filing_context: FilingContext,
 ) -> List[ExtractedFact]:
     """Extract facts from a batch of already-classified tables.
 
@@ -252,14 +290,65 @@ def extract_facts_from_tables(
         tables: Tables extracted by ingest/pdf_parser.py.
         classifications: One classification per table, same order, as
             produced by ingest/table_classifier.classify_tables().
+        filing_context: Form type and fiscal period of the source filing,
+            shared across every table in one filing.
 
     Returns:
         All extracted facts across every table, concatenated.
     """
     all_facts: List[ExtractedFact] = []
     for table, classification in zip(tables, classifications):
-        all_facts.extend(extract_facts(table, classification))
+        all_facts.extend(extract_facts(table, classification, filing_context))
     return all_facts
+
+
+def _period_guidance(filing_context: FilingContext) -> str:
+    """Build the period-disambiguation paragraph injected into every
+    extraction call, so the LLM never has to guess a filing's period type
+    from ambiguous in-table text when the orchestrator already knows it.
+
+    Args:
+        filing_context: Form type and fiscal period of the source filing.
+
+    Returns:
+        A short paragraph to prepend to the user message.
+    """
+    period_desc = (
+        f"fiscal quarter {filing_context.fiscal_quarter} of fiscal year "
+        f"{filing_context.fiscal_year}"
+        if filing_context.fiscal_quarter is not None
+        else f"the full fiscal year {filing_context.fiscal_year}"
+    )
+    guidance = (
+        f"This table is from a {filing_context.form_type} covering "
+        f"{period_desc}."
+    )
+    if filing_context.fiscal_quarter is not None:
+        guidance += (
+            " If a column header shows only a bare year with no period "
+            "qualifier (no \"twelve months\", \"fiscal year\", \"annual\"), "
+            f"assume that column represents fiscal quarter "
+            f"{filing_context.fiscal_quarter} for that year, not the full "
+            "year. 10-Q tables routinely show quarterly comparatives under "
+            "bare-year headers, with the \"three/six/nine months ended\" "
+            "qualifier appearing only in surrounding page text, not in the "
+            "table itself. A single table can also show BOTH a discrete "
+            "quarter column and a separate year-to-date column covering "
+            "multiple quarters (e.g. \"Three Months Ended\" next to \"Six "
+            "Months Ended\") -- these are two different facts, not "
+            "duplicates: set is_ytd=false and quarter equal to the fiscal "
+            "quarter above for the discrete column, and is_ytd=true with "
+            "quarter equal to the ENDING quarter of the range for the "
+            "cumulative column. Never label a year-to-date figure with "
+            "quarter=null; that value is reserved exclusively for a true "
+            "full fiscal year figure."
+        )
+    else:
+        guidance += (
+            " A bare-year column header in a 10-K normally represents the "
+            "full fiscal year unless the table itself states otherwise."
+        )
+    return guidance
 
 
 # =============================================================================
@@ -313,11 +402,18 @@ if __name__ == "__main__":
         required=True,
         help="Stable identifier, e.g. TSLA-10K-2025-12-31",
     )
+    ap.add_argument("--form-type", required=True, help="e.g. 10-K, 10-Q, 10-K/A")
+    ap.add_argument("--fiscal-year", required=True, type=int)
+    ap.add_argument("--fiscal-quarter", type=int, default=None, help="Omit for a 10-K")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
     parsed = parse_filing(args.pdf_path, args.filing_id)
     classifications = classify_tables(parsed.tables)
-    facts = extract_facts_from_tables(parsed.tables, classifications)
+    filing_context = FilingContext(
+        form_type=args.form_type, fiscal_year=args.fiscal_year,
+        fiscal_quarter=args.fiscal_quarter,
+    )
+    facts = extract_facts_from_tables(parsed.tables, classifications, filing_context)
     print(json.dumps([f.model_dump() for f in facts], indent=2))

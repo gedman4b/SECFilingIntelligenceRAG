@@ -56,7 +56,7 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
-from app.agents.fact_retriever import retrieve_facts
+from app.agents.fact_retriever import resolve_preferred_facts, retrieve_facts
 from app.agents.numerical_reasoner import compute
 from app.agents.prose_retriever import retrieve_prose
 from app.agents.verifier import verify
@@ -161,22 +161,31 @@ def _run_numeric_case(case: BenchmarkCase) -> CaseResult:
     """
     details: List[str] = []
     facts = retrieve_facts(case.plan)
+    resolved_facts = resolve_preferred_facts(facts)
 
     computed: Optional[float] = None
     if case.question_type in (QuestionType.GROWTH_CALC, QuestionType.COMPARISON):
-        computed, _expr = compute(case.plan, facts)
+        computed, _expr = compute(case.plan, resolved_facts)
 
+    # verify() receives the raw, unfiltered facts -- matching main.py,
+    # since Check 9's conflict accounting needs every source, not just the
+    # resolved winner.
     _warnings, confidence = verify(case.question, case.plan, facts, computed)
 
     value_ok = True
     provenance_ok = True
     for expected in case.expected_facts:
-        match = next(
-            (f for f in facts
-             if f.metric_canonical_id == expected.metric_canonical_id
-             and f.period.year == expected.year
-             and f.period.quarter == expected.quarter),
-            None,
+        # Multiple tables can agree on the same (metric, period); cite the
+        # one fact_retriever.py flagged as the primary source rather than
+        # whichever SQL happened to return first.
+        candidates = [
+            f for f in facts
+            if f.metric_canonical_id == expected.metric_canonical_id
+            and f.period.year == expected.year
+            and f.period.quarter == expected.quarter
+        ]
+        match = next((f for f in candidates if f.is_preferred_source), None) or (
+            candidates[0] if candidates else None
         )
         if match is None:
             value_ok = False

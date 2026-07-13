@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS facts (
     year                 INTEGER NOT NULL,
     quarter              INTEGER,
     is_ttm               INTEGER NOT NULL DEFAULT 0,
+    is_ytd               INTEGER NOT NULL DEFAULT 0,
     is_gaap              INTEGER NOT NULL DEFAULT 1,
     is_restated          INTEGER NOT NULL DEFAULT 0,
     filing_id            TEXT NOT NULL REFERENCES filings(id),
@@ -109,8 +110,11 @@ CREATE INDEX IF NOT EXISTS idx_facts_lookup
 -- key; year (and quarter) must be part of it. quarter is COALESCE'd to a
 -- sentinel because SQLite treats every NULL as distinct in a UNIQUE index,
 -- which would defeat de-duplication for full-year facts (quarter IS NULL).
+-- is_ytd is part of the key too: a 10-Q row can carry both a discrete
+-- quarter figure and a year-to-date-through-that-quarter figure sharing
+-- the same row_id and quarter number, and they must not collide.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_facts_provenance
-    ON facts (filing_id, table_id, row_id, year, COALESCE(quarter, -1));
+    ON facts (filing_id, table_id, row_id, year, COALESCE(quarter, -1), is_ytd);
 
 CREATE TABLE IF NOT EXISTS prose_chunks (
     id           TEXT PRIMARY KEY,
@@ -179,6 +183,7 @@ class FactRecord(BaseModel):
     year: int
     quarter: Optional[int] = None
     is_ttm: bool = False
+    is_ytd: bool = False
     is_gaap: bool = True
     is_restated: bool = False
     filing_id: str
@@ -249,14 +254,14 @@ def insert_fact(conn: sqlite3.Connection, record: FactRecord) -> int:
         """
         INSERT OR REPLACE INTO facts
             (company_ticker, metric_canonical_id, metric_raw_label, value,
-             units, year, quarter, is_ttm, is_gaap, is_restated, filing_id,
+             units, year, quarter, is_ttm, is_ytd, is_gaap, is_restated, filing_id,
              page_number, table_id, row_id, ambiguity_flags)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record.company_ticker, record.metric_canonical_id,
             record.metric_raw_label, record.value, record.units, record.year,
-            record.quarter, int(record.is_ttm), int(record.is_gaap),
+            record.quarter, int(record.is_ttm), int(record.is_ytd), int(record.is_gaap),
             int(record.is_restated), record.filing_id, record.page_number,
             record.table_id, record.row_id,
             ",".join(record.ambiguity_flags) if record.ambiguity_flags else None,

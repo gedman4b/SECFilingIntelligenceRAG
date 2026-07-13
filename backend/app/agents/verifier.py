@@ -100,12 +100,23 @@ def verify(
 
     # Check 9: the same metric+period sourced from more than one table.
     # SEC filings routinely restate primary-statement figures elsewhere
-    # (MD&A commentary, footnotes), and the Fact Retriever's query has no
-    # preference logic -- it returns every matching row. When every source
-    # agrees, that is extra corroborating evidence, not a problem. When
-    # they disagree, the system has no principled way to pick a winner and
-    # must fail closed rather than silently citing whichever row SQLite
-    # happened to return first.
+    # (MD&A commentary, footnotes, subsidiary/VIE disclosures that reuse a
+    # generic label like "Total assets" for an unrelated, much smaller
+    # scope), and the Fact Retriever's query has no preference logic on
+    # its own -- it returns every matching row; is_preferred_source is
+    # computed separately, from which table resolves the most distinct
+    # canonical metrics (the true primary statement resolves many; a
+    # footnote or MD&A table that incidentally repeats one figure resolves
+    # only one or two).
+    #
+    # When every source agrees, that is extra corroborating evidence, not
+    # a problem. When they disagree AND exactly one source is preferred,
+    # trust it (agents/fact_retriever.resolve_preferred_facts() is what
+    # every downstream stage actually computes/cites from) but disclose
+    # the disagreement rather than hiding it. When they disagree with no
+    # single preferred source (a tie, or no clear winner), there is no
+    # principled way to pick one, and the system must fail closed rather
+    # than silently citing whichever row SQLite happened to return first.
     grouped: dict = {}
     for f in facts:
         key = (f.metric_canonical_id, f.period.year, f.period.quarter)
@@ -116,14 +127,28 @@ def verify(
             continue
         distinct_values = {g.value for g in group}
         if len(distinct_values) > 1:
-            warnings.append(Warning(
-                severity='error',
-                message=(
-                    f'{metric_id} Y{year}Q{quarter}: conflicting values across '
-                    f'{len(distinct_tables)} source tables: {sorted(distinct_values)}'
-                ),
-            ))
-            confidence = 'insufficient_data'
+            preferred = [g for g in group if g.is_preferred_source]
+            preferred_values = {g.value for g in preferred}
+            if len(preferred_values) == 1:
+                warnings.append(Warning(
+                    severity='info',
+                    message=(
+                        f'{metric_id} Y{year}Q{quarter}: {len(distinct_tables) - len(preferred)} '
+                        f'other source table(s) reported a different value (e.g. a subsidiary, '
+                        f'VIE, or footnote disclosure reusing the same label); using the primary '
+                        f'statement figure {next(iter(preferred_values)):,}.'
+                    ),
+                ))
+            else:
+                warnings.append(Warning(
+                    severity='error',
+                    message=(
+                        f'{metric_id} Y{year}Q{quarter}: conflicting values across '
+                        f'{len(distinct_tables)} source tables with no single preferred source: '
+                        f'{sorted(distinct_values)}'
+                    ),
+                ))
+                confidence = 'insufficient_data'
         else:
             warnings.append(Warning(
                 severity='info',
