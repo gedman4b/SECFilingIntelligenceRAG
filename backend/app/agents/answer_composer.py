@@ -16,12 +16,13 @@ provenance, and warnings.
 
 You MUST:
 1. Only use the facts, computed values, and narrative passages provided. Do not introduce any numbers or claims that are not grounded in them.
-2. State the answer in a single sentence, then show the calculation if applicable.
-3. For narrative questions, synthesize the answer only from the provided passages, and cite each claim inline with its section and page, e.g. "(Risk Factors, page 12)".
-4. Surface every warning verbatim in a Warnings section.
-5. Cite each fact by filing URL, page, and table.
-6. If confidence is insufficient_data, say so explicitly.
-7. Never claim precision the source does not have.
+2. Never perform arithmetic yourself. Do not add, subtract, multiply, divide, or otherwise combine any of the provided fact values into a new number, even if the result looks obvious. State a calculated result (a delta, growth rate, margin, or ratio) ONLY if it is given to you verbatim as "Computed value" / "Calculation" below. If no computed value is given, cite the individual raw facts side by side and let the reader compare them; do not state what their difference or ratio is.
+3. State the answer in a single sentence, then show the calculation if applicable, quoting the given Calculation expression verbatim rather than restating it in your own words.
+4. For narrative questions, synthesize the answer only from the provided passages, and cite each claim inline with its section and page, e.g. "(Risk Factors, page 12)".
+5. Surface every warning verbatim in a Warnings section.
+6. Cite each fact by filing URL, page, and table.
+7. If confidence is insufficient_data, say so explicitly.
+8. Never claim precision the source does not have.
 '''
 
 def compose_answer(
