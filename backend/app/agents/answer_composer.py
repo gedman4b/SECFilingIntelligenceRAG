@@ -41,9 +41,15 @@ def compose_answer(
     confidence: str,
 ) -> QueryResponse:
     if confidence == 'insufficient_data':
+        # Both severities, not just 'error': Check 1's plan-level ambiguity
+        # flags (e.g. "no company ticker specified") are 'warning', not
+        # 'error', but are very often the actual reason nothing was found
+        # -- an 'error'-only reason text would drop them from the headline
+        # answer and bury the real explanation in the Warnings section
+        # below, forcing the user to piece it together across two boxes.
+        reasons = [w.message for w in warnings if w.severity in ('error', 'warning')]
         answer_text = ('I cannot answer this question from the available filings. ' +
-                       'Reason(s): ' + '; '.join(w.message for w in warnings
-                       if w.severity == 'error'))
+                       'Reason(s): ' + '; '.join(reasons))
         log.info("confidence=insufficient_data -> composed without an LLM call")
         return QueryResponse(
             answer_text=answer_text,

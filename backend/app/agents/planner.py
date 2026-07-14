@@ -13,6 +13,7 @@ metric_natural_language against that registry deterministically. Teaching the Pl
 would duplicate a registry that changes independently of this prompt.
 """
 import logging
+from datetime import datetime, timezone
 
 import anthropic
 from app.schemas import QueryPlan, QuestionType, Period
@@ -21,7 +22,11 @@ from app.instrumentation import log_latency
 log = logging.getLogger(__name__)
 client = anthropic.Anthropic()
 
-SYSTEM_PROMPT = '''You classify SEC filing questions into structured plans.
+# Kept separate from the per-call system prompt (see plan_query()) because
+# today's date has to be computed fresh at call time, not baked into a
+# module-level constant that would go stale the moment the process
+# doesn't restart daily.
+SYSTEM_PROMPT_RULES = '''You classify SEC filing questions into structured plans.
 Rules:
 1. If the question asks for a growth rate, delta, or year-over-year change in ONE metric that is a plain dollar figure or count (not a ratio or percentage), use question_type=growth_calc and include BOTH periods.
 2. If the question asks for a single value at a point in time, use question_type=numeric_lookup.
@@ -52,6 +57,13 @@ Rules:
    "most_deteriorated" for "deteriorated most" / "got worse" / "worst performing"; "most_improved" for
    "improved most" / "best performing". Set ranking_scope="expense" only if the question explicitly restricts
    to expenses/costs (e.g. "expense increases", "cost line items"); otherwise leave it unset.
+10. Resolve relative time phrases ("last quarter", "this year", "latest", "most recent", "currently") against
+    the current date given below -- never against your own training-data assumptions or a guessed date, which
+    would silently drift further wrong the longer this system runs. "Last quarter" means the most recently
+    completed fiscal quarter before the current date; "this year" means the fiscal year containing it. An
+    explicit year/quarter stated in the question always overrides the current date. If the question has no
+    relative-time phrase and no explicit period, leave periods unresolved per rule 4 rather than inferring one
+    from the current date.
 '''
 
 PLAN_TOOL = {
@@ -62,11 +74,13 @@ PLAN_TOOL = {
 
 @log_latency(log)
 def plan_query(question: str) -> QueryPlan:
+    today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    system_prompt = f"{SYSTEM_PROMPT_RULES}\nToday's date is {today}."
     try:
         response = client.messages.create(
             model='claude-sonnet-4-5',
             max_tokens=800,
-            system=SYSTEM_PROMPT,
+            system=system_prompt,
             tools=[PLAN_TOOL],
             tool_choice={'type': 'tool', 'name': 'submit_query_plan'},
             messages=[{'role': 'user', 'content': question}],

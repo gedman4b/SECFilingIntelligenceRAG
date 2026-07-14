@@ -37,6 +37,28 @@ def verify(
             ))
         confidence = 'medium'
 
+    # Check 1b: numeric_lookup/growth_calc/comparison/margin_calc/ranking
+    # are all scoped by company_ticker in the Fact Retriever's SQL -- with
+    # no ticker, the query can only ever return zero rows, which Check 2
+    # below would otherwise report as an opaque "no matching facts found"
+    # with no hint that the real, fixable problem is "you didn't name a
+    # company". This is a plain, deterministic field check, not a re-use
+    # of the Planner's own ambiguity_flags: live testing showed the same
+    # unambiguous no-company question sometimes got an ambiguity_flag from
+    # the Planner and sometimes didn't (LLM judgment, not guaranteed), so
+    # relying on it alone was not reliable enough for something this
+    # fundamental. narrative is exempt: prose_retriever.py's vector search
+    # works fine with company_ticker=None (searches across every company).
+    if plan.question_type in ('numeric_lookup', 'growth_calc', 'comparison', 'margin_calc', 'ranking'):
+        if not plan.company_ticker:
+            warnings.append(Warning(
+                severity='error',
+                message='No company specified. Please name a company (e.g. "Tesla", "Apple") in your question.',
+                field='company_ticker',
+            ))
+            log.info("question_type=%s -> confidence=insufficient_data (no company_ticker)", plan.question_type)
+            return warnings, 'insufficient_data'
+
     # Check 2: was any requested fact missing? For margin_calc, `facts`
     # is the combined numerator+denominator list main.py builds before
     # calling verify(); either side being completely absent means this

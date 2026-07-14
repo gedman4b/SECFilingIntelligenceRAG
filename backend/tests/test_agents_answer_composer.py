@@ -39,6 +39,31 @@ def test_insufficient_data_never_calls_the_llm(monkeypatch):
     assert response.citations == []
 
 
+def test_insufficient_data_reason_includes_warning_severity_ambiguity_flags(monkeypatch):
+    """Regression guard for a real gap found via live testing: a ranking
+    question with no company specified produced ambiguity_flags (severity
+    'warning', from Check 1) plus a generic "no facts found" (severity
+    'error', from Check 2) -- but the reason text only included 'error'
+    messages, so the actually-useful explanation ("no company ticker
+    specified") never made it into the headline answer, only into the
+    separate Warnings section below. Both severities must appear."""
+    mock_create = MagicMock()
+    monkeypatch.setattr(answer_composer.client.messages, "create", mock_create)
+
+    plan = QueryPlan(question_type=QuestionType.RANKING)
+    response = answer_composer.compose_answer(
+        question="Which metrics deteriorated the most last quarter?", plan=plan,
+        facts=[], computed=None, comp_expr=None, prose=[],
+        warnings=[
+            Warning(severity="warning", message="Question interpretation uncertain: no company ticker specified"),
+            Warning(severity="error", message="No matching facts found in the corpus for this question."),
+        ],
+        confidence="insufficient_data",
+    )
+    assert "no company ticker specified" in response.answer_text.lower()
+    assert "no matching facts found" in response.answer_text.lower()
+
+
 def test_compose_answer_includes_facts_in_prompt(monkeypatch):
     captured = {}
 

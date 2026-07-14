@@ -20,7 +20,14 @@ def _fact(**overrides) -> Fact:
 
 
 def _plan(**overrides) -> QueryPlan:
-    defaults = dict(question_type=QuestionType.NUMERIC_LOOKUP, periods=[Period(year=2025)])
+    # company_ticker defaults to a real value so tests targeting OTHER
+    # checks aren't incidentally short-circuited by Check 1b (missing
+    # company); Check 1b has its own dedicated tests below that
+    # explicitly omit it.
+    defaults = dict(
+        question_type=QuestionType.NUMERIC_LOOKUP, periods=[Period(year=2025)],
+        company_ticker="TSLA",
+    )
     defaults.update(overrides)
     return QueryPlan(**defaults)
 
@@ -30,6 +37,41 @@ def test_plan_ambiguity_downgrades_to_medium():
     warnings, confidence = verify("q", _plan(ambiguity_flags=["unclear period"]), [_fact()], None)
     assert confidence == "medium"
     assert any("interpretation uncertain" in w.message for w in warnings)
+
+
+# Check 1b: a missing company_ticker fails closed deterministically,
+# regardless of whether the Planner's own ambiguity_flags happened to
+# mention it (LLM judgment, not guaranteed -- confirmed via live testing
+# that the identical unambiguous no-company question was flagged on one
+# run and not on another).
+def test_missing_company_ticker_is_insufficient_data_for_numeric_question():
+    plan = _plan(company_ticker=None)
+    warnings, confidence = verify("q", plan, [], None)
+    assert confidence == "insufficient_data"
+    assert any("no company specified" in w.message.lower() for w in warnings)
+
+
+def test_missing_company_ticker_is_insufficient_data_for_ranking():
+    plan = _plan(question_type=QuestionType.RANKING, company_ticker=None)
+    warnings, confidence = verify("q", plan, [], None)
+    assert confidence == "insufficient_data"
+    assert any("no company specified" in w.message.lower() for w in warnings)
+
+
+def test_missing_company_ticker_does_not_block_narrative():
+    """prose_retriever.py's vector search works fine with
+    company_ticker=None -- it searches across every company -- so
+    narrative must not be short-circuited by Check 1b the way the
+    SQL-scoped question types are."""
+    from app.store.vector_store import ProsePassage
+    plan = _plan(question_type=QuestionType.NARRATIVE, company_ticker=None, periods=[])
+    passages = [ProsePassage(
+        chunk_id="c1", filing_id="X", section_type="risk_factors",
+        page_start=1, page_end=1, text="risk text", distance=0.1,
+    )]
+    warnings, confidence = verify("q", plan, [], None, prose=passages)
+    assert confidence != "insufficient_data"
+    assert not any("no company specified" in w.message.lower() for w in warnings)
 
 
 # Check 2: no facts for a numeric question fails closed
