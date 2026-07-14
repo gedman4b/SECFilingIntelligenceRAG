@@ -10,10 +10,11 @@ const citationsBlock = document.getElementById('citations-block');
 submitBtn.addEventListener('click', async () => {
   const question = questionInput.value.trim();
   if (!question) return;
- 
+
+  clearResponse();
   submitBtn.disabled = true;
   submitBtn.textContent = 'Thinking...';
- 
+
   try {
     const res = await fetch('/api/query', {
       method: 'POST',
@@ -39,6 +40,16 @@ submitBtn.addEventListener('click', async () => {
   }
 });
  
+function clearResponse() {
+  responseSection.classList.add('hidden');
+  confidenceBadge.className = 'confidence-badge';
+  confidenceBadge.textContent = '';
+  answerText.textContent = '';
+  calculationBlock.innerHTML = '';
+  warningsBlock.innerHTML = '';
+  citationsBlock.innerHTML = '';
+}
+
 function renderResponse(data) {
   responseSection.classList.remove('hidden');
   const confMap = {
