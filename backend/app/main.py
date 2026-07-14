@@ -5,7 +5,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from app.schemas import QueryPlan, QueryRequest, QueryResponse, Fact
 from app.agents.planner import plan_query
-from app.agents.fact_retriever import retrieve_facts, resolve_preferred_facts
+from app.agents.fact_retriever import (
+    retrieve_facts, retrieve_ratio_facts, retrieve_ranking_facts, resolve_preferred_facts,
+)
 from app.agents.numerical_reasoner import compute
 from app.agents.prose_retriever import retrieve_prose
 from app.agents.verifier import verify
@@ -52,6 +54,34 @@ def query(request: QueryRequest) -> QueryResponse:
         resolved_facts = resolve_preferred_facts(facts)
         if plan.question_type in ('growth_calc', 'comparison'):
             computed, comp_expr = compute(plan, resolved_facts)
+
+    # Stage B, C variant: margin_calc needs two metrics (numerator and
+    # denominator) for the same period rather than one metric across two
+    # periods. Both sides are resolved to their preferred source
+    # independently, then combined: `facts` (raw, both sides) goes to
+    # verify() for its conflict/period-alignment checks exactly like the
+    # single-metric path, and `resolved_facts` (both sides' resolved
+    # values) goes to compose_answer() so the numerator and denominator
+    # are both citable.
+    if plan.question_type == 'margin_calc':
+        numerator_facts, denominator_facts = retrieve_ratio_facts(plan)
+        facts = numerator_facts + denominator_facts
+        resolved_numerator = resolve_preferred_facts(numerator_facts)
+        resolved_denominator = resolve_preferred_facts(denominator_facts)
+        resolved_facts = resolved_numerator + resolved_denominator
+        computed, comp_expr = compute(plan, resolved_numerator, resolved_denominator)
+
+    # Stage B, C variant: ranking has no single target metric -- it scans
+    # every candidate metric (or the expense subset) for the two requested
+    # periods and ranks by magnitude of change. metric_facts_by_id is
+    # already resolved-to-preferred-source per metric by
+    # retrieve_ranking_facts(), so both `facts` (for verify()'s checks) and
+    # `resolved_facts` (for citations) are just its flattened values.
+    if plan.question_type == 'ranking':
+        metric_facts_by_id = retrieve_ranking_facts(plan)
+        resolved_facts = [f for mfacts in metric_facts_by_id.values() for f in mfacts]
+        facts = resolved_facts
+        computed, comp_expr = compute(plan, facts=[], metric_facts_by_id=metric_facts_by_id)
 
     # Stage D: narrative path
     if plan.question_type == 'narrative':

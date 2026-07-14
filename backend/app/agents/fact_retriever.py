@@ -3,28 +3,33 @@ import logging
 
 from app.schemas import QueryPlan, Fact, Period
 from app.store.db import get_conn
-from app.ingest.canonicalizer import resolve_canonical_metric
+from app.ingest.canonicalizer import (
+    resolve_canonical_metric, all_metric_ids, expense_metric_ids, normalize_label,
+)
 from app.instrumentation import log_latency
-from typing import List
+from typing import Dict, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
-@log_latency(log)
-def retrieve_facts(plan: QueryPlan) -> List[Fact]:
-    if not plan.metric_canonical_id and not plan.metric_natural_language:
-        return []
- 
-    # Resolve canonical ID if needed
-    metric_id = plan.metric_canonical_id
-    if not metric_id and plan.metric_natural_language:
-        metric_id = resolve_canonical_metric(plan.metric_natural_language)
- 
-    if not metric_id:
-        return []
- 
+
+def _retrieve_facts_for_metric(
+    company_ticker: Optional[str],
+    metric_id: str,
+    periods: List[Period],
+    gaap_preference: str,
+) -> List[Fact]:
+    """Core retrieval: every fact for one already-resolved metric across
+    the given periods, with is_audited and is_preferred_source computed.
+
+    Shared by retrieve_facts() (one metric, the common case) and
+    retrieve_ratio_facts() (two metrics, for margin_calc), so a margin
+    question gets exactly the same YTD-exclusion, richness-ranking, and
+    provenance handling as every other numeric path -- not a second,
+    drifting implementation of the same query.
+    """
     conn = get_conn()
-    results = []
-    for period in plan.periods:
+    results: List[Fact] = []
+    for period in periods:
         # is_ytd=0 excludes year-to-date cumulative facts (e.g. a 10-Q's
         # "six months ended" column). Nothing in QueryPlan can request a
         # YTD figure yet, so a YTD fact would otherwise collide with either
@@ -50,7 +55,7 @@ def retrieve_facts(plan: QueryPlan) -> List[Fact]:
                    f.metric_canonical_id, f.metric_raw_label,
                    f.is_gaap, f.is_restated,
                    f.filing_id, fi.filing_url, f.page_number,
-                   f.table_id, f.row_id, f.ambiguity_flags,
+                   f.table_id, f.row_id, f.ambiguity_flags, fi.form_type,
                    COALESCE(tr.n_metrics, 0) AS table_richness
             FROM facts f
             JOIN filings fi ON fi.id = f.filing_id
@@ -62,9 +67,9 @@ def retrieve_facts(plan: QueryPlan) -> List[Fact]:
               AND f.is_gaap = ?
               AND f.is_ytd = 0
         ''', (
-            plan.company_ticker, metric_id,
+            company_ticker, metric_id,
             period.year, period.quarter, period.quarter,
-            plan.gaap_preference != 'non_gaap',
+            gaap_preference != 'non_gaap',
         )).fetchall()
 
         period_facts = [
@@ -76,6 +81,10 @@ def retrieve_facts(plan: QueryPlan) -> List[Fact]:
                 metric_raw_label=r['metric_raw_label'],
                 is_gaap=bool(r['is_gaap']),
                 is_restated=bool(r['is_restated']),
+                # 10-K/10-K-A annual statements are audited; 10-Q/10-Q-A
+                # quarterly statements are not, per standard SEC practice.
+                # A pure form_type lookup, not an LLM judgment.
+                is_audited=r['form_type'] in ('10-K', '10-K/A'),
                 filing_id=r['filing_id'],
                 filing_url=r['filing_url'],
                 page_number=r['page_number'],
@@ -90,11 +99,229 @@ def retrieve_facts(plan: QueryPlan) -> List[Fact]:
             for fact, row in zip(period_facts, rows):
                 fact.is_preferred_source = row['table_richness'] == richest
         results.extend(period_facts)
-    log.info(
-        "plan(company=%s, metric=%s, periods=%d) -> %d facts",
-        plan.company_ticker, metric_id, len(plan.periods), len(results),
-    )
     return results
+
+
+def _retrieve_facts_by_raw_label(
+    company_ticker: Optional[str],
+    raw_label_query: str,
+    periods: List[Period],
+    gaap_preference: str,
+) -> List[Fact]:
+    """Deterministic fallback for a metric that has no canonical registry
+    entry -- e.g. a business-segment breakdown like "AWS revenue" or
+    Tesla's "Energy generation and storage segment revenue", which
+    consolidated financial-statement metrics (METRIC_TOTAL_REVENUE etc.)
+    never carry. The canonical registry only covers consolidated
+    statement line items on purpose (ingest/canonicalizer.py); segment and
+    other one-off disclosures are still extracted and stored (as
+    metric_canonical_id=UNRESOLVED, with an ambiguity_flag), just never
+    forced into a canonical id.
+
+    Matches by exact-match-after-normalization of the QUESTION's own
+    metric text against each fact's stored metric_raw_label, using the
+    identical normalization rule the canonical registry itself uses
+    (ingest.canonicalizer.normalize_label) -- never a fuzzy or embedding
+    match, per the numeric path's no-embeddings rule. This is a real
+    second matching direction, not a duplicate of canonicalization at
+    ingest time: ingestion matched each fact's raw label against the
+    registry's known_labels; this matches the user's question text
+    directly against facts' raw labels already in the store.
+
+    Args:
+        company_ticker: e.g. "TSLA".
+        raw_label_query: The unresolved metric_natural_language text from
+            the plan, e.g. "energy generation and storage segment revenue".
+        periods: Periods to search.
+        gaap_preference: Same GAAP filter as the canonical path.
+
+    Returns:
+        Matching facts, same shape and provenance fields as
+        _retrieve_facts_for_metric(). Facts found this way keep whatever
+        ambiguity_flags they were stored with (typically
+        "unrecognized_label: ..."), which the Verifier's Check 6 already
+        turns into a medium-confidence warning -- an accurate signal, since
+        no registry entry vouches for this match the way a canonical
+        metric_id would.
+    """
+    conn = get_conn()
+    target = normalize_label(raw_label_query)
+    results: List[Fact] = []
+    for period in periods:
+        rows = conn.execute('''
+            WITH table_richness AS (
+                SELECT table_id, COUNT(DISTINCT metric_canonical_id) AS n_metrics
+                FROM facts
+                WHERE metric_canonical_id != 'UNRESOLVED'
+                GROUP BY table_id
+            )
+            SELECT f.value, f.units, f.year, f.quarter, f.is_ttm,
+                   f.metric_canonical_id, f.metric_raw_label,
+                   f.is_gaap, f.is_restated,
+                   f.filing_id, fi.filing_url, f.page_number,
+                   f.table_id, f.row_id, f.ambiguity_flags, fi.form_type,
+                   COALESCE(tr.n_metrics, 0) AS table_richness
+            FROM facts f
+            JOIN filings fi ON fi.id = f.filing_id
+            LEFT JOIN table_richness tr ON tr.table_id = f.table_id
+            WHERE f.company_ticker = ?
+              AND f.year = ?
+              AND (f.quarter IS ? OR f.quarter = ?)
+              AND f.is_gaap = ?
+              AND f.is_ytd = 0
+        ''', (
+            company_ticker, period.year, period.quarter, period.quarter,
+            gaap_preference != 'non_gaap',
+        )).fetchall()
+
+        matching_rows = [r for r in rows if normalize_label(r['metric_raw_label']) == target]
+        period_facts = [
+            Fact(
+                value=r['value'],
+                units=r['units'],
+                period=Period(year=r['year'], quarter=r['quarter'], is_ttm=r['is_ttm']),
+                metric_canonical_id=r['metric_canonical_id'],
+                metric_raw_label=r['metric_raw_label'],
+                is_gaap=bool(r['is_gaap']),
+                is_restated=bool(r['is_restated']),
+                is_audited=r['form_type'] in ('10-K', '10-K/A'),
+                filing_id=r['filing_id'],
+                filing_url=r['filing_url'],
+                page_number=r['page_number'],
+                table_id=r['table_id'],
+                row_id=r['row_id'],
+                ambiguity_flags=(r['ambiguity_flags'] or '').split(',') if r['ambiguity_flags'] else [],
+            )
+            for r in matching_rows
+        ]
+        if period_facts:
+            richest = max(r['table_richness'] for r in matching_rows)
+            for fact, row in zip(period_facts, matching_rows):
+                fact.is_preferred_source = row['table_richness'] == richest
+        results.extend(period_facts)
+    return results
+
+
+@log_latency(log)
+def retrieve_facts(plan: QueryPlan) -> List[Fact]:
+    if not plan.metric_canonical_id and not plan.metric_natural_language:
+        return []
+
+    # Resolve canonical ID if needed
+    metric_id = plan.metric_canonical_id
+    if not metric_id and plan.metric_natural_language:
+        metric_id = resolve_canonical_metric(plan.metric_natural_language)
+
+    if metric_id:
+        results = _retrieve_facts_for_metric(
+            plan.company_ticker, metric_id, plan.periods, plan.gaap_preference,
+        )
+        log.info(
+            "plan(company=%s, metric=%s, periods=%d) -> %d facts",
+            plan.company_ticker, metric_id, len(plan.periods), len(results),
+        )
+        return results
+
+    # metric_natural_language did not resolve against the canonical
+    # registry at all (metric_id is still None) -- try the deterministic
+    # raw-label fallback before giving up. Only reached when there was
+    # never a canonical id to begin with; a canonical id that resolved but
+    # simply has no facts for the requested period is NOT retried here,
+    # since that's a real "no data" case the Verifier must fail closed on,
+    # not a segment-label mismatch.
+    if plan.metric_natural_language:
+        results = _retrieve_facts_by_raw_label(
+            plan.company_ticker, plan.metric_natural_language, plan.periods, plan.gaap_preference,
+        )
+        log.info(
+            "plan(company=%s, metric=%r, periods=%d) -> canonical registry miss, "
+            "raw-label fallback -> %d facts",
+            plan.company_ticker, plan.metric_natural_language, len(plan.periods), len(results),
+        )
+        return results
+
+    return []
+
+
+@log_latency(log)
+def retrieve_ratio_facts(plan: QueryPlan) -> Tuple[List[Fact], List[Fact]]:
+    """Retrieve both sides of a margin_calc plan: numerator facts (the
+    metric in metric_natural_language/metric_canonical_id, e.g. "gross
+    profit") and denominator facts (ratio_denominator_*, e.g. "revenue").
+
+    Args:
+        plan: A QueryPlan with question_type=margin_calc.
+
+    Returns:
+        (numerator_facts, denominator_facts). Either list is empty if its
+        metric could not be resolved or had no matching facts; the caller
+        (main.py) is responsible for treating that as insufficient_data,
+        same as retrieve_facts() returning [].
+    """
+    numerator_id = plan.metric_canonical_id
+    if not numerator_id and plan.metric_natural_language:
+        numerator_id = resolve_canonical_metric(plan.metric_natural_language)
+
+    denominator_id = plan.ratio_denominator_canonical_id
+    if not denominator_id and plan.ratio_denominator_natural_language:
+        denominator_id = resolve_canonical_metric(plan.ratio_denominator_natural_language)
+
+    numerator_facts = (
+        _retrieve_facts_for_metric(plan.company_ticker, numerator_id, plan.periods, plan.gaap_preference)
+        if numerator_id else []
+    )
+    denominator_facts = (
+        _retrieve_facts_for_metric(plan.company_ticker, denominator_id, plan.periods, plan.gaap_preference)
+        if denominator_id else []
+    )
+    log.info(
+        "plan(company=%s, numerator=%s, denominator=%s, periods=%d) -> %d/%d facts",
+        plan.company_ticker, numerator_id, denominator_id, len(plan.periods),
+        len(numerator_facts), len(denominator_facts),
+    )
+    return numerator_facts, denominator_facts
+
+
+@log_latency(log)
+def retrieve_ranking_facts(plan: QueryPlan) -> Dict[str, List[Fact]]:
+    """For question_type=ranking: every canonical metric (optionally scoped
+    to expense-line metrics via plan.ranking_scope) that has a resolved
+    fact in BOTH of plan.periods for plan.company_ticker.
+
+    Ranking has no single target metric_canonical_id the way every other
+    question_type does -- it scans the whole registry (or the expense
+    subset) instead of resolving one metric_natural_language, so it needs
+    its own retrieval entry point rather than reusing retrieve_facts().
+
+    Args:
+        plan: A QueryPlan with question_type=ranking and exactly two
+            periods (the before/after periods being compared).
+
+    Returns:
+        Mapping from metric_canonical_id to its resolved facts, restricted
+        to metrics with a preferred-source fact in both periods. A metric
+        present in only one period is omitted entirely rather than ranked
+        on a partial comparison.
+    """
+    if len(plan.periods) != 2:
+        return {}
+
+    candidate_ids = expense_metric_ids() if plan.ranking_scope == 'expense' else all_metric_ids()
+
+    result: Dict[str, List[Fact]] = {}
+    for metric_id in candidate_ids:
+        facts = _retrieve_facts_for_metric(
+            plan.company_ticker, metric_id, plan.periods, plan.gaap_preference,
+        )
+        resolved = resolve_preferred_facts(facts)
+        periods_present = {(f.period.year, f.period.quarter) for f in resolved}
+        if len(periods_present) == 2:
+            result[metric_id] = resolved
+    log.info(
+        "plan(company=%s, scope=%s) -> %d/%d candidate metrics have both periods",
+        plan.company_ticker, plan.ranking_scope, len(result), len(candidate_ids),
+    )
+    return result
 
 
 def resolve_preferred_facts(facts: List[Fact]) -> List[Fact]:

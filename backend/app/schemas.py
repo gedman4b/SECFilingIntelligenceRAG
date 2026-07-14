@@ -12,6 +12,18 @@ class QuestionType(str, Enum):
     GROWTH_CALC = 'growth_calc'
     NARRATIVE = 'narrative'
     COMPARISON = 'comparison'
+    # A ratio between two different metrics in the same period, e.g.
+    # "gross margin" (gross profit / revenue) or "SG&A as a percentage of
+    # revenue". Distinct from growth_calc/comparison, which both relate
+    # ONE metric across two periods; this relates TWO metrics in the SAME
+    # period(s).
+    MARGIN_CALC = 'margin_calc'
+    # Ranks multiple canonical metrics by magnitude of change between two
+    # periods, e.g. "which metrics deteriorated most" or "biggest expense
+    # increases". Distinct from growth_calc, which computes ONE named
+    # metric's change; this has no single target metric, only a company
+    # and two periods.
+    RANKING = 'ranking'
     UNKNOWN = 'unknown'
  
 class Period(BaseModel):
@@ -34,6 +46,24 @@ class QueryPlan(BaseModel):
     company_ticker: Optional[str] = None
     metric_natural_language: Optional[str] = None
     metric_canonical_id: Optional[str] = None
+    # Only set when question_type is margin_calc. metric_natural_language /
+    # metric_canonical_id above is the ratio's numerator (e.g. "gross
+    # profit"); these are the denominator (e.g. "revenue"). Left for the
+    # deterministic canonicalizer to resolve, same as the numerator.
+    ratio_denominator_natural_language: Optional[str] = None
+    ratio_denominator_canonical_id: Optional[str] = None
+    # Only set when question_type is ranking. top_increase/top_decrease
+    # rank by raw growth % regardless of what the metric represents;
+    # most_deteriorated/most_improved instead account for each metric's
+    # is_expense flag (ingest/canonicalizer.py), so a rising expense and a
+    # falling revenue both count as deterioration rather than whichever has
+    # the larger raw percentage.
+    ranking_direction: Literal['top_increase', 'top_decrease', 'most_deteriorated', 'most_improved'] = 'top_increase'
+    # Only set when question_type is ranking. 'expense' restricts ranked
+    # candidates to cost/expense-line metrics (e.g. "biggest expense
+    # increases"); None ranks every canonical metric with data in both
+    # requested periods.
+    ranking_scope: Optional[Literal['expense']] = None
     periods: List[Period] = Field(default_factory=list)
     gaap_preference: Literal['gaap', 'non_gaap', 'either'] = 'gaap'
     ambiguity_flags: List[str] = Field(default_factory=list)
@@ -46,6 +76,12 @@ class Fact(BaseModel):
     metric_raw_label: str
     is_gaap: bool
     is_restated: bool = False
+    # False when the source filing's financial statements are unaudited,
+    # per standard SEC convention: a 10-K's annual statements are audited,
+    # a 10-Q's quarterly statements are not. Derived deterministically from
+    # the filing's form_type, not guessed by an LLM. Named explicitly in
+    # the assignment brief's ambiguity checklist.
+    is_audited: bool = True
     filing_id: str
     filing_url: str
     page_number: int

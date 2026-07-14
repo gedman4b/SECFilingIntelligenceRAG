@@ -41,7 +41,7 @@ The frontend (`../frontend/`) is a separate Node/Express app that proxies `/api/
 uv run pytest
 ```
 
-108 unit tests across every ingestion and agent module, using golden inputs and expected outputs. The Anthropic client is mocked at the boundary in every test that touches an LLM-calling module (`planner`, `answer_composer`, `table_classifier`, `fact_extractor`), so the suite makes no live API calls and runs in a few seconds. Tests that touch the vector store use chromadb's bundled local embedding model, which is not a live LLM provider.
+159 unit tests across every ingestion and agent module, using golden inputs and expected outputs. The Anthropic client is mocked at the boundary in every test that touches an LLM-calling module (`planner`, `answer_composer`, `table_classifier`, `fact_extractor`), so the suite makes no live API calls and runs in a few seconds. Tests that touch the vector store use chromadb's bundled local embedding model, which is not a live LLM provider.
 
 Every test uses a temporary SQLite/Chroma store (`tmp_path`), never the real persistent fact store.
 

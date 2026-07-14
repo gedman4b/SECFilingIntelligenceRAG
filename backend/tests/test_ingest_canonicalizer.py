@@ -9,8 +9,11 @@ from app.ingest.canonicalizer import (
     CanonicalMetric,
     _build_label_index,
     _normalize_label,
+    all_metric_ids,
     canonicalize_facts,
     canonicalize_label,
+    expense_metric_ids,
+    normalize_label,
     resolve_canonical_metric,
 )
 from app.ingest.fact_extractor import ExtractedFact
@@ -88,9 +91,9 @@ def test_registry_collision_raises_at_build_time():
 # canonicalize_facts: batch resolution for ingestion
 # =============================================================================
 
-def _extracted_fact(label: str, value: float = 100.0) -> ExtractedFact:
+def _extracted_fact(label: str, value: float = 100.0, units: str = "USD_millions") -> ExtractedFact:
     return ExtractedFact(
-        metric_raw_label=label, year=2025, value=value, units="USD_millions",
+        metric_raw_label=label, year=2025, value=value, units=units,
         filing_id="TSLA-10K-2025-12-31", page_number=61,
         table_id="TSLA-10K-2025-12-31::page61::table1", row_id=1,
     )
@@ -110,3 +113,89 @@ def test_canonicalize_facts_keeps_unresolved_facts_stored_not_dropped():
     assert len(records) == 1
     assert records[0].metric_canonical_id == UNRESOLVED_METRIC_ID
     assert len(records[0].ambiguity_flags) == 1
+
+
+# =============================================================================
+# Units-disambiguated labels: "Basic"/"Diluted" mean genuinely different
+# things (a per-share dollar figure vs. a share count) depending on units.
+# Confirmed against real Tesla 10-K data: both meanings use the identical
+# bare label text in different sections of the same table.
+# =============================================================================
+
+@pytest.mark.parametrize("label,units,expected_metric_id", [
+    ("Basic", "per_share", "METRIC_EPS_BASIC"),
+    ("Diluted", "per_share", "METRIC_EPS_DILUTED"),
+    ("Basic", "shares_millions", "METRIC_WEIGHTED_AVG_SHARES_BASIC"),
+    ("Diluted", "shares_millions", "METRIC_WEIGHTED_AVG_SHARES_DILUTED"),
+])
+def test_basic_diluted_resolve_by_units(label, units, expected_metric_id):
+    assert resolve_canonical_metric(label, units=units) == expected_metric_id
+
+
+def test_basic_diluted_without_units_is_unresolved_not_guessed():
+    result = canonicalize_label("Basic", units=None)
+    assert result.metric_canonical_id is None
+    assert "ambiguous_without_units" in result.ambiguity_flags[0]
+
+
+def test_basic_diluted_with_unrecognized_units_is_unresolved_not_guessed():
+    result = canonicalize_label("Basic", units="percent")
+    assert result.metric_canonical_id is None
+
+
+def test_canonicalize_facts_disambiguates_basic_by_units():
+    """The batch ingestion path has units on ExtractedFact and must use
+    them; this is the actual code path fact_extractor.py -> canonicalizer.py
+    exercises, not just the unit-level resolve_canonical_metric() helper."""
+    facts = [
+        _extracted_fact("Basic", value=1.18, units="per_share"),
+        _extracted_fact("Basic", value=3225.0, units="shares_millions"),
+    ]
+    records = canonicalize_facts(facts, company_ticker="TSLA")
+    ids = {r.metric_canonical_id for r in records}
+    assert ids == {"METRIC_EPS_BASIC", "METRIC_WEIGHTED_AVG_SHARES_BASIC"}
+
+
+@pytest.mark.parametrize("label,expected_metric_id", [
+    ("diluted eps", "METRIC_EPS_DILUTED"),
+    ("basic earnings per share", "METRIC_EPS_BASIC"),
+    ("SG&A", "METRIC_SGA"),
+    ("Selling, general and administrative", "METRIC_SGA"),
+])
+def test_full_phrase_labels_resolve_without_units(label, expected_metric_id):
+    """A user's natural-language question ('Tesla's diluted EPS') supplies
+    enough context in the phrase itself; the online query path never has
+    units available and must not need them for these."""
+    assert resolve_canonical_metric(label) == expected_metric_id
+
+
+# =============================================================================
+# is_expense flag / registry scan helpers, for the ranking question_type
+# =============================================================================
+
+def test_expense_metric_ids_is_curated_not_inferred():
+    """SG&A, cost of revenue, and total operating expenses are hand-curated
+    expense line items; a profit or revenue metric must never appear here
+    even though its name might superficially suggest it."""
+    ids = set(expense_metric_ids())
+    assert ids == {"METRIC_COST_OF_REVENUE", "METRIC_OPERATING_EXPENSES", "METRIC_SGA"}
+
+
+def test_all_metric_ids_covers_every_registry_entry():
+    assert set(all_metric_ids()) >= {
+        "METRIC_TOTAL_REVENUE", "METRIC_NET_INCOME", "METRIC_SGA", "METRIC_TOTAL_ASSETS",
+    }
+    assert len(all_metric_ids()) == len(set(all_metric_ids()))  # no duplicate ids
+
+
+def test_expense_metric_ids_is_subset_of_all_metric_ids():
+    assert set(expense_metric_ids()) <= set(all_metric_ids())
+
+
+def test_normalize_label_is_public_wrapper_around_the_same_rule():
+    """agents/fact_retriever.py's raw-label fallback for segment metrics
+    (e.g. "AWS revenue") must use the identical normalization rule the
+    registry itself uses, not a second, drifting definition."""
+    assert normalize_label("  Energy Generation and Storage Segment Revenue  ") == \
+        _normalize_label("  Energy Generation and Storage Segment Revenue  ")
+    assert normalize_label("Foo (1)") == "foo"

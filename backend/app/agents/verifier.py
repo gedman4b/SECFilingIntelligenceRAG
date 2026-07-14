@@ -10,6 +10,13 @@ from typing import List, Tuple, Optional
 
 log = logging.getLogger(__name__)
 
+
+def _format_period(period) -> str:
+    """Render a Period as "Y2025" or "Y2025 Q1" instead of its Pydantic
+    repr, for warning messages a user actually reads."""
+    return f"Y{period.year}" + (f" Q{period.quarter}" if period.quarter else "")
+
+
 @log_latency(log)
 def verify(
     question: str,
@@ -30,8 +37,13 @@ def verify(
             ))
         confidence = 'medium'
 
-    # Check 2: was any requested fact missing?
-    if plan.question_type in ('numeric_lookup', 'growth_calc', 'comparison'):
+    # Check 2: was any requested fact missing? For margin_calc, `facts`
+    # is the combined numerator+denominator list main.py builds before
+    # calling verify(); either side being completely absent means this
+    # check already covers it (an empty combined list can only happen if
+    # BOTH sides were empty, but if only ONE side resolved, Check 2 would
+    # miss it -- see the margin-specific check just below instead).
+    if plan.question_type in ('numeric_lookup', 'growth_calc', 'comparison', 'margin_calc', 'ranking'):
         if not facts:
             warnings.append(Warning(
                 severity='error',
@@ -39,7 +51,38 @@ def verify(
             ))
             log.info("question_type=%s -> confidence=insufficient_data (no facts)", plan.question_type)
             return warnings, 'insufficient_data'
- 
+
+    # Check 2b: margin_calc needs BOTH the numerator and denominator metric
+    # resolved for the same period, not just "some fact exists" -- Check 3
+    # below only verifies each requested period matches ANY fact in the
+    # combined numerator+denominator list, which would wrongly look
+    # satisfied if e.g. revenue resolved but gross profit did not.
+    # numerical_reasoner.compute() already returns computed=None for every
+    # margin failure mode (missing side, no common period, zero
+    # denominator), so it is the one signal that actually distinguishes
+    # "ratio computable" from not.
+    if plan.question_type == 'margin_calc' and computed is None:
+        warnings.append(Warning(
+            severity='error',
+            message='Could not compute the requested ratio: the numerator and denominator metrics were not both available for the same period.',
+        ))
+        log.info("question_type=margin_calc -> confidence=insufficient_data (computed is None)")
+        return warnings, 'insufficient_data'
+
+    # Check 2c: ranking needs at least one candidate metric with a usable
+    # value in both requested periods. `facts` being non-empty (Check 2)
+    # only means SOME metric had a fact in SOME period; computed is None
+    # is the actual signal from numerical_reasoner.compute() that no
+    # metric had both periods with a non-zero base.
+    if plan.question_type == 'ranking' and computed is None:
+        warnings.append(Warning(
+            severity='error',
+            message='Could not rank any metric: none had a usable value in both requested periods.',
+        ))
+        log.info("question_type=ranking -> confidence=insufficient_data (computed is None)")
+        return warnings, 'insufficient_data'
+
+
     # Check 3: period alignment
     for period in plan.periods:
         matched = any(f.period.year == period.year
@@ -64,12 +107,17 @@ def verify(
                 ))
                 confidence = 'medium' if confidence == 'high' else confidence
  
-    # Check 5: restated figures
+    # Check 5: restated figures. Deduplicated per (metric, period): several
+    # corroborating source tables for the same fact would otherwise each
+    # produce an identical warning.
+    seen_restated = set()
     for f in facts:
-        if f.is_restated:
+        key = (f.metric_canonical_id, f.period.year, f.period.quarter)
+        if f.is_restated and key not in seen_restated:
+            seen_restated.add(key)
             warnings.append(Warning(
                 severity='info',
-                message=f'Value at {f.period} is a restated figure.',
+                message=f'{f.metric_canonical_id} {_format_period(f.period)} is a restated figure.',
             ))
  
     # Check 6: metric canonicalization ambiguity
@@ -164,6 +212,22 @@ def verify(
                     f'{metric_id} Y{year}Q{quarter}: corroborated by '
                     f'{len(distinct_tables)} source tables (values agree).'
                 ),
+            ))
+
+    # Check 10: unaudited figures. Named explicitly in the assignment
+    # brief's ambiguity checklist ("unaudited statements"). A 10-Q's
+    # quarterly figures are unaudited by standard SEC practice; that is
+    # normal, not a defect, so it is disclosed as info rather than
+    # downgrading confidence -- the same treatment Check 5 gives restated
+    # figures. Deduplicated per (metric, period) for the same reason.
+    seen_unaudited = set()
+    for f in facts:
+        key = (f.metric_canonical_id, f.period.year, f.period.quarter)
+        if not f.is_audited and key not in seen_unaudited:
+            seen_unaudited.add(key)
+            warnings.append(Warning(
+                severity='info',
+                message=f'{f.metric_canonical_id} {_format_period(f.period)} is from an unaudited (quarterly) filing.',
             ))
 
     log.info(

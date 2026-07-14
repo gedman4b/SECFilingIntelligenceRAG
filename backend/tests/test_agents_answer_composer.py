@@ -87,3 +87,26 @@ def test_compose_system_forbids_derived_arithmetic():
     once silently subtracted two given facts to state an unauthorized
     dollar delta. The prompt must explicitly forbid this."""
     assert "never perform arithmetic" in answer_composer.COMPOSE_SYSTEM.lower()
+
+
+def test_compose_system_forbids_confidence_mismatch():
+    """Regression guard for a real bug found in live testing: given
+    confidence='medium', the Composer's own narrative stated
+    "Confidence: Insufficient data" -- a self-contradiction the structured
+    confidence field never showed. The prompt must forbid restating
+    confidence in different words than the value it was given."""
+    system_lower = answer_composer.COMPOSE_SYSTEM.lower()
+    assert "insufficient data" in system_lower
+    assert "given value" in system_lower
+
+
+def test_compose_system_forbids_estimating_missing_metrics():
+    """Regression guard for a related, more severe bug found in the same
+    live session: asked for a margin the system couldn't fully compute
+    (revenue was never retrieved), the Composer invented an approximate
+    percentage using a number it admitted was not provided. The prompt
+    must forbid estimating a missing input, not just forbid combining
+    inputs that were actually given."""
+    system_lower = answer_composer.COMPOSE_SYSTEM.lower()
+    assert "not retrieved" in system_lower or "was not retrieved" in system_lower
+    assert "estimate" in system_lower

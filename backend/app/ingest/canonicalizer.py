@@ -71,6 +71,13 @@ class CanonicalMetric(BaseModel):
     display_name: str
     statement: str  # 'income_stmt' | 'balance_sheet' | 'cash_flow'
     known_labels: List[str]  # raw label variants; normalized at load time
+    # True for cost/expense line items, where a decrease is an improvement
+    # and an increase is deterioration -- the opposite of a revenue or
+    # profit metric. Curated by hand, not inferred from label text, so the
+    # ranking question_type (agents/numerical_reasoner.py) can score
+    # "deteriorated most" deterministically instead of guessing from the
+    # metric's name.
+    is_expense: bool = False
 
 
 CANONICAL_METRICS: List[CanonicalMetric] = [
@@ -91,6 +98,7 @@ CANONICAL_METRICS: List[CanonicalMetric] = [
             "Total cost of revenues", "Total cost of sales",
             "cost of revenue", "cost of goods sold", "cogs",
         ],
+        is_expense=True,
     ),
     CanonicalMetric(
         metric_id="METRIC_GROSS_PROFIT",
@@ -103,6 +111,17 @@ CANONICAL_METRICS: List[CanonicalMetric] = [
         display_name="Total operating expenses",
         statement="income_stmt",
         known_labels=["Total operating expenses", "operating expenses"],
+        is_expense=True,
+    ),
+    CanonicalMetric(
+        metric_id="METRIC_SGA",
+        display_name="Selling, general and administrative expenses",
+        statement="income_stmt",
+        known_labels=[
+            "Selling, general and administrative", "sg&a", "sga",
+            "selling, general and administrative expenses",
+        ],
+        is_expense=True,
     ),
     CanonicalMetric(
         metric_id="METRIC_OPERATING_INCOME",
@@ -166,7 +185,74 @@ CANONICAL_METRICS: List[CanonicalMetric] = [
             "operating cash flow", "cash flow from operations", "cash from operations",
         ],
     ),
+    CanonicalMetric(
+        metric_id="METRIC_EPS_BASIC",
+        display_name="Basic earnings per share",
+        statement="income_stmt",
+        # Deliberately does NOT include the bare label "Basic": real 10-K
+        # tables use that exact text for both this metric (a per-share
+        # dollar figure) and weighted-average basic share count (a share
+        # count), under different section headers. See
+        # UNITS_DISAMBIGUATED_LABELS below for how the bare form is
+        # resolved using units, not label text alone.
+        known_labels=[
+            "basic earnings per share", "basic eps", "basic net income per share",
+        ],
+    ),
+    CanonicalMetric(
+        metric_id="METRIC_EPS_DILUTED",
+        display_name="Diluted earnings per share",
+        statement="income_stmt",
+        known_labels=[
+            "diluted earnings per share", "diluted eps", "diluted net income per share",
+        ],
+    ),
+    CanonicalMetric(
+        metric_id="METRIC_WEIGHTED_AVG_SHARES_BASIC",
+        display_name="Weighted average basic shares outstanding",
+        statement="income_stmt",
+        known_labels=[
+            "weighted average basic shares outstanding", "weighted-average basic shares outstanding",
+            "basic weighted average shares", "weighted average shares outstanding, basic",
+        ],
+    ),
+    CanonicalMetric(
+        metric_id="METRIC_WEIGHTED_AVG_SHARES_DILUTED",
+        display_name="Weighted average diluted shares outstanding",
+        statement="income_stmt",
+        known_labels=[
+            "weighted average diluted shares outstanding", "weighted-average diluted shares outstanding",
+            "diluted weighted average shares", "weighted average shares outstanding, diluted",
+        ],
+    ),
 ]
+
+# Real 10-K tables use the bare label "Basic" (and "Diluted") for two
+# genuinely different concepts under different section headers: a
+# per-share dollar figure (units=per_share) under "Net income per share",
+# and a share count (units=shares_millions or similar) under "Weighted
+# average shares". Confirmed against Tesla's actual FY2025 10-K: both rows
+# literally say just "Basic", distinguished only by which table/units they
+# belong to. Resolving this by label text alone would be exactly the kind
+# of near-miss collision Part 1 of the write-up warns embeddings cause --
+# except here it would be the canonicalizer causing it, on an exact-match
+# path that is supposed to be the guard against that failure mode. So
+# these two labels are excluded from the plain known_labels lists above
+# and resolved here instead, using units as the disambiguating signal.
+UNITS_DISAMBIGUATED_LABELS: Dict[str, Dict[str, str]] = {
+    "basic": {
+        "per_share": "METRIC_EPS_BASIC",
+        "shares_millions": "METRIC_WEIGHTED_AVG_SHARES_BASIC",
+        "shares_thousands": "METRIC_WEIGHTED_AVG_SHARES_BASIC",
+        "shares": "METRIC_WEIGHTED_AVG_SHARES_BASIC",
+    },
+    "diluted": {
+        "per_share": "METRIC_EPS_DILUTED",
+        "shares_millions": "METRIC_WEIGHTED_AVG_SHARES_DILUTED",
+        "shares_thousands": "METRIC_WEIGHTED_AVG_SHARES_DILUTED",
+        "shares": "METRIC_WEIGHTED_AVG_SHARES_DILUTED",
+    },
+}
 
 
 # =============================================================================
@@ -235,18 +321,35 @@ class CanonicalizationResult(BaseModel):
     ambiguity_flags: List[str] = Field(default_factory=list)
 
 
-def canonicalize_label(raw_label: str) -> CanonicalizationResult:
+def canonicalize_label(raw_label: str, units: Optional[str] = None) -> CanonicalizationResult:
     """Resolve a raw filing label to a canonical metric id.
 
     Args:
         raw_label: Label exactly as extracted from the filing, e.g.
             "Total revenues".
+        units: The fact's units (e.g. "per_share", "shares_millions"),
+            when known. Required to resolve a small set of labels ("Basic",
+            "Diluted") that are genuinely ambiguous by text alone -- see
+            UNITS_DISAMBIGUATED_LABELS. Not needed for any other label.
 
     Returns:
         The canonical id if the normalized label is an exact registry
-        match, otherwise no id and an ambiguity flag explaining why.
+        match (using units to disambiguate where needed), otherwise no id
+        and an ambiguity flag explaining why.
     """
     key = _normalize_label(raw_label)
+
+    if key in UNITS_DISAMBIGUATED_LABELS:
+        by_units = UNITS_DISAMBIGUATED_LABELS[key]
+        if units in by_units:
+            return CanonicalizationResult(metric_canonical_id=by_units[units])
+        return CanonicalizationResult(
+            ambiguity_flags=[
+                f"ambiguous_without_units: {raw_label!r} could mean any of "
+                f"{sorted(set(by_units.values()))} depending on units; got units={units!r}"
+            ],
+        )
+
     metric_id = _LABEL_INDEX.get(key)
     if metric_id is not None:
         return CanonicalizationResult(metric_canonical_id=metric_id)
@@ -257,22 +360,50 @@ def canonicalize_label(raw_label: str) -> CanonicalizationResult:
     )
 
 
-def resolve_canonical_metric(raw_label: str) -> Optional[str]:
+def normalize_label(label: str) -> str:
+    """Public entry point for the same exact-match-after-normalization rule
+    the canonical registry itself uses (lowercase, curly-quote, footnote-
+    marker, whitespace normalization). Exposed so a caller matching
+    directly against facts' own metric_raw_label -- e.g. the raw-label
+    fallback in agents/fact_retriever.py for a metric with no canonical
+    registry entry, such as a business-segment breakdown -- uses the exact
+    same normalization rule rather than a second, drifting definition of
+    "the same label"."""
+    return _normalize_label(label)
+
+
+def all_metric_ids() -> List[str]:
+    """Every canonical metric id in the registry, for question types (e.g.
+    ranking) that scan across all metrics rather than resolving one."""
+    return [m.metric_id for m in CANONICAL_METRICS]
+
+
+def expense_metric_ids() -> List[str]:
+    """Canonical metric ids curated as cost/expense line items. See
+    CanonicalMetric.is_expense."""
+    return [m.metric_id for m in CANONICAL_METRICS if m.is_expense]
+
+
+def resolve_canonical_metric(raw_label: str, units: Optional[str] = None) -> Optional[str]:
     """Resolve a raw label to a canonical metric id, or None if unresolved.
 
     Thin wrapper around canonicalize_label() matching the signature
     agents/fact_retriever.py already calls on the online query path. Never
     makes an LLM call or network request; must stay safe to call from a
-    stage declared LLM-free.
+    stage declared LLM-free. units is optional and only needed for the
+    handful of labels units alone can disambiguate; a user's natural-
+    language question ("Tesla's diluted EPS") supplies enough context in
+    the phrase itself that units are not needed on this path in practice.
 
     Args:
         raw_label: Natural-language metric text, e.g. from a user question
             or an extracted fact's raw label.
+        units: The fact's units, if known.
 
     Returns:
         The canonical metric id, or None if unresolved.
     """
-    return canonicalize_label(raw_label).metric_canonical_id
+    return canonicalize_label(raw_label, units).metric_canonical_id
 
 
 def canonicalize_facts(
@@ -294,7 +425,7 @@ def canonicalize_facts(
     records: List[FactRecord] = []
     unresolved_count = 0
     for fact in facts:
-        result = canonicalize_label(fact.metric_raw_label)
+        result = canonicalize_label(fact.metric_raw_label, fact.units)
         if result.metric_canonical_id is None:
             unresolved_count += 1
         records.append(FactRecord(

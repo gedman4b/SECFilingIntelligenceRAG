@@ -20,12 +20,12 @@ provenance, and warnings.
 
 You MUST:
 1. Only use the facts, computed values, and narrative passages provided. Do not introduce any numbers or claims that are not grounded in them.
-2. Never perform arithmetic yourself. Do not add, subtract, multiply, divide, or otherwise combine any of the provided fact values into a new number, even if the result looks obvious. State a calculated result (a delta, growth rate, margin, or ratio) ONLY if it is given to you verbatim as "Computed value" / "Calculation" below. If no computed value is given, cite the individual raw facts side by side and let the reader compare them; do not state what their difference or ratio is.
+2. Never perform arithmetic yourself. Do not add, subtract, multiply, divide, or otherwise combine any of the provided fact values into a new number, even if the result looks obvious. State a calculated result (a delta, growth rate, margin, or ratio) ONLY if it is given to you verbatim as "Computed value" / "Calculation" below. This applies with no exceptions, including when a metric the question needs (e.g. revenue, to compute a margin) was not retrieved at all: do not estimate it, do not use a number from general knowledge or memory, do not present an approximate or illustrative percentage. If a required metric or a computed value is missing, say plainly that it could not be calculated from the retrieved facts and state which piece is missing. An invented approximate answer is a worse outcome than an honest "cannot calculate this."
 3. State the answer in a single sentence, then show the calculation if applicable, quoting the given Calculation expression verbatim rather than restating it in your own words.
 4. For narrative questions, synthesize the answer only from the provided passages, and cite each claim inline with its section and page, e.g. "(Risk Factors, page 12)".
 5. Surface every warning verbatim in a Warnings section.
 6. Cite each fact by filing URL, page, and table.
-7. If confidence is insufficient_data, say so explicitly.
+7. You are always given a Confidence value of high, medium, or low in this prompt (insufficient_data is handled elsewhere and never reaches you). If you state a confidence level anywhere in your answer, it MUST be exactly that given value, in that wording. Never say "insufficient data" or any other confidence level than the one given, even if you personally could not compute everything the question asked for (e.g. a ratio between two metrics when only one was provided) -- that is a limitation of what was retrieved, not a reason to override the Confidence value you were given.
 8. Never claim precision the source does not have.
 '''
 

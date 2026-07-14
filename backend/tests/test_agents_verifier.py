@@ -131,3 +131,59 @@ def test_conflicting_facts_with_no_clear_winner_fail_closed():
     warnings, confidence = verify("q", _plan(), facts, None)
     assert confidence == "insufficient_data"
     assert any(w.severity == "error" and "no single preferred source" in w.message for w in warnings)
+
+
+# Check 10: unaudited figures (named explicitly in the assignment brief's
+# ambiguity checklist)
+def test_unaudited_fact_is_disclosed_as_info_not_downgraded():
+    warnings, confidence = verify("q", _plan(), [_fact(is_audited=False)], None)
+    assert confidence == "high"
+    assert any(w.severity == "info" and "unaudited" in w.message for w in warnings)
+
+
+def test_audited_fact_produces_no_unaudited_warning():
+    warnings, confidence = verify("q", _plan(), [_fact(is_audited=True)], None)
+    assert not any("unaudited" in w.message for w in warnings)
+
+
+# Check 2b: margin_calc needs computed to be non-None, since Check 3's
+# generic "some fact matches this period" logic can't tell whether both
+# the numerator and denominator metric resolved.
+def test_margin_calc_with_computed_value_is_not_insufficient():
+    plan = _plan(question_type=QuestionType.MARGIN_CALC)
+    warnings, confidence = verify("q", plan, [_fact(), _fact(row_id=2)], 18.03)
+    assert confidence != "insufficient_data"
+
+
+def test_margin_calc_without_computed_value_is_insufficient_even_with_facts():
+    """Facts exist (e.g. only the numerator resolved), but computed is
+    None because the denominator never resolved -- must still fail
+    closed, not silently answer with only half the ratio."""
+    plan = _plan(question_type=QuestionType.MARGIN_CALC)
+    warnings, confidence = verify("q", plan, [_fact()], None)
+    assert confidence == "insufficient_data"
+    assert any("numerator and denominator" in w.message for w in warnings)
+
+
+# Check 2c: ranking needs computed (a rank actually produced), same
+# reasoning as margin_calc's Check 2b.
+def test_ranking_with_no_facts_is_insufficient_data():
+    plan = _plan(question_type=QuestionType.RANKING)
+    warnings, confidence = verify("q", plan, [], None)
+    assert confidence == "insufficient_data"
+
+
+def test_ranking_with_facts_but_no_computed_is_insufficient_data():
+    """Facts exist (some metric matched some period), but computed is None
+    because no metric had a usable value in BOTH periods -- must still
+    fail closed."""
+    plan = _plan(question_type=QuestionType.RANKING)
+    warnings, confidence = verify("q", plan, [_fact()], None)
+    assert confidence == "insufficient_data"
+    assert any("Could not rank" in w.message for w in warnings)
+
+
+def test_ranking_with_computed_value_is_not_insufficient():
+    plan = _plan(question_type=QuestionType.RANKING)
+    warnings, confidence = verify("q", plan, [_fact(), _fact(row_id=2)], 50.0)
+    assert confidence != "insufficient_data"
