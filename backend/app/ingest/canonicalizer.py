@@ -225,6 +225,84 @@ CANONICAL_METRICS: List[CanonicalMetric] = [
             "diluted weighted average shares", "weighted average shares outstanding, diluted",
         ],
     ),
+    # Tesla's segment revenue breakdown (10-K/10-Q "Revenues" footnote
+    # table). Added after a real live-tested gap: "revenue from car sales"
+    # did not match the exact filing text "Automotive sales", and the
+    # numeric path's raw-label fallback (fact_retriever.py) is intentionally
+    # exact-match only, never fuzzy, so it correctly found nothing rather
+    # than guess.
+    #
+    # "Automotive sales" and "Automotive leasing" are deliberately NOT
+    # canonical metrics here, despite being the two most obviously-useful
+    # ones. Tesla's own income statement (confirmed against the actual
+    # PDF, TSLA-10Q-2026-03-31 page 5) reuses the EXACT text "Automotive
+    # sales" for two different line items -- once under "Revenues" ($15,473
+    # for Q1 2026) and again, verbatim, under "Cost of revenues" ($12,616
+    # for the same quarter) -- and same for "Automotive leasing" and
+    # "Services and other". A canonical metric_id has no way to know which
+    # of the two a given row came from; the extraction pipeline does not
+    # currently capture which section of the table a row belongs to. Live
+    # testing caught this the hard way: an earlier version of this registry
+    # force-mapped bare "Automotive sales" to one metric_id, which silently
+    # merged the revenue and cost-of-revenue figures and surfaced as a
+    # "conflicting values" verifier error instead of a clean answer -- correct
+    # fail-closed behavior, but for the wrong reason (it made a real,
+    # resolvable-in-principle ambiguity look identical to the case where
+    # nothing is known at all). Properly resolving this needs a
+    # section-aware signal captured at extraction time (analogous to how
+    # is_expense and the Basic/Diluted units-disambiguation already solve
+    # different versions of this same "same label, two meanings" problem),
+    # which is a real, scoped follow-up, not a quick synonym fix. Until
+    # then, both stay unresolved and fail closed rather than guess.
+    #
+    # "Automotive regulatory credits" and "Total automotive revenues" are
+    # safe: confirmed via direct query that each has exactly one value per
+    # (company, year, quarter) across every filing and table -- no
+    # cost-of-revenue line reuses either exact text.
+    CanonicalMetric(
+        metric_id="METRIC_AUTOMOTIVE_REGULATORY_CREDITS",
+        display_name="Automotive regulatory credits",
+        statement="income_stmt",
+        known_labels=[
+            "Automotive regulatory credits", "regulatory credits", "regulatory credit revenue",
+            "automotive regulatory credit revenue",
+        ],
+    ),
+    CanonicalMetric(
+        metric_id="METRIC_TOTAL_AUTOMOTIVE_REVENUE",
+        display_name="Total automotive revenues",
+        statement="income_stmt",
+        known_labels=[
+            "Total automotive revenues", "automotive revenue", "automotive segment revenue",
+            "total automotive revenue",
+        ],
+    ),
+    CanonicalMetric(
+        metric_id="METRIC_ENERGY_SALES",
+        display_name="Energy generation and storage sales",
+        statement="income_stmt",
+        known_labels=[
+            "Energy generation and storage sales", "energy storage sales", "energy hardware sales",
+            "energy sales revenue",
+        ],
+    ),
+    CanonicalMetric(
+        metric_id="METRIC_ENERGY_LEASING",
+        display_name="Energy generation and storage leasing",
+        statement="income_stmt",
+        known_labels=[
+            "Energy generation and storage leasing", "energy leasing", "energy leasing revenue",
+        ],
+    ),
+    CanonicalMetric(
+        metric_id="METRIC_TOTAL_ENERGY_REVENUE",
+        display_name="Energy generation and storage segment revenue",
+        statement="income_stmt",
+        known_labels=[
+            "Energy generation and storage segment revenue", "energy segment revenue",
+            "total energy revenue", "energy generation and storage revenue",
+        ],
+    ),
 ]
 
 # Real 10-K tables use the bare label "Basic" (and "Diluted") for two

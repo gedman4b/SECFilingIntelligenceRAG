@@ -183,25 +183,25 @@ def test_retrieve_ratio_facts_gets_both_sides(seeded_conn):
 
 
 def test_retrieve_facts_falls_back_to_raw_label_when_unresolved(seeded_conn):
-    """A segment breakdown like Tesla's 'Energy generation and storage
-    segment revenue' has no canonical registry entry -- resolve_canonical_
-    metric() returns None for it -- but the fact was still extracted and
-    stored (metric_canonical_id=UNRESOLVED, per ingest/canonicalizer.py).
-    A question naming that exact phrase must still find it."""
+    """A balance-sheet line with no canonical registry entry -- e.g.
+    Tesla's 'Digital assets' -- resolve_canonical_metric() returns None
+    for it, but the fact was still extracted and stored
+    (metric_canonical_id=UNRESOLVED, per ingest/canonicalizer.py). A
+    question naming that exact phrase must still find it."""
     insert_fact(seeded_conn, _fact(
         metric_canonical_id="UNRESOLVED",
-        metric_raw_label="Energy generation and storage segment revenue",
-        value=12771.0,
-        ambiguity_flags=["unrecognized_label: 'Energy generation and storage segment revenue' did not match the canonical metric registry"],
+        metric_raw_label="Digital assets",
+        value=1234.0,
+        ambiguity_flags=["unrecognized_label: 'Digital assets' did not match the canonical metric registry"],
     ))
     plan = QueryPlan(
         question_type=QuestionType.NUMERIC_LOOKUP, company_ticker="TSLA",
-        metric_natural_language="energy generation and storage segment revenue",
+        metric_natural_language="digital assets",
         periods=[Period(year=2025)],
     )
     facts = retrieve_facts(plan)
     assert len(facts) == 1
-    assert facts[0].value == 12771.0
+    assert facts[0].value == 1234.0
     assert facts[0].ambiguity_flags  # carries the unresolved flag through
 
 
@@ -211,12 +211,12 @@ def test_retrieve_facts_raw_label_fallback_is_exact_match_not_fuzzy(seeded_conn)
     numeric queries."""
     insert_fact(seeded_conn, _fact(
         metric_canonical_id="UNRESOLVED",
-        metric_raw_label="Energy generation and storage segment revenue",
-        value=12771.0,
+        metric_raw_label="Digital assets",
+        value=1234.0,
     ))
     plan = QueryPlan(
         question_type=QuestionType.NUMERIC_LOOKUP, company_ticker="TSLA",
-        metric_natural_language="energy storage revenue",  # not an exact match
+        metric_natural_language="digital asset holdings",  # not an exact match
         periods=[Period(year=2025)],
     )
     assert retrieve_facts(plan) == []

@@ -60,7 +60,7 @@ def test_resolve_canonical_metric_unrecognized_label_returns_none():
 
 
 def test_canonicalize_label_flags_unrecognized_rather_than_guessing():
-    result = canonicalize_label("Automotive regulatory credits")
+    result = canonicalize_label("Digital assets")
     assert result.metric_canonical_id is None
     assert len(result.ambiguity_flags) == 1
     assert "unrecognized_label" in result.ambiguity_flags[0]
@@ -109,7 +109,7 @@ def test_canonicalize_facts_resolves_known_labels():
 def test_canonicalize_facts_keeps_unresolved_facts_stored_not_dropped():
     """Guard 2 of the write-up: ambiguous facts are still stored and
     retrievable, flagged, not silently discarded."""
-    records = canonicalize_facts([_extracted_fact("Automotive regulatory credits")], company_ticker="TSLA")
+    records = canonicalize_facts([_extracted_fact("Digital assets")], company_ticker="TSLA")
     assert len(records) == 1
     assert records[0].metric_canonical_id == UNRESOLVED_METRIC_ID
     assert len(records[0].ambiguity_flags) == 1
@@ -167,6 +167,56 @@ def test_full_phrase_labels_resolve_without_units(label, expected_metric_id):
     enough context in the phrase itself; the online query path never has
     units available and must not need them for these."""
     assert resolve_canonical_metric(label) == expected_metric_id
+
+
+# =============================================================================
+# Segment revenue metrics (Tesla's Automotive / Energy breakdown). Added
+# after a real live-tested gap: "revenue from car sales" did not match
+# the exact filing text "Automotive sales" -- the fix is curated synonyms
+# here, not fuzzy matching on the numeric path.
+#
+# "Automotive sales", "Automotive leasing", and "Services and other" are
+# deliberately NOT canonical metrics and must stay unresolved: Tesla's
+# own income statement reuses each exact text for two different line
+# items (once under "Revenues", once under "Cost of revenues", confirmed
+# against the actual filing PDF) with genuinely different values for the
+# same period. See the long comment above their names' absence in
+# CANONICAL_METRICS for the full story -- this is the same "same label,
+# two meanings" problem the write-up's near-miss guard exists for, just
+# discovered one level deeper than the registry alone can currently
+# resolve.
+# =============================================================================
+
+@pytest.mark.parametrize("label,expected_metric_id", [
+    ("Automotive regulatory credits", "METRIC_AUTOMOTIVE_REGULATORY_CREDITS"),
+    ("regulatory credits", "METRIC_AUTOMOTIVE_REGULATORY_CREDITS"),
+    ("Total automotive revenues", "METRIC_TOTAL_AUTOMOTIVE_REVENUE"),
+    ("automotive revenue", "METRIC_TOTAL_AUTOMOTIVE_REVENUE"),
+    ("Energy generation and storage sales", "METRIC_ENERGY_SALES"),
+    ("energy storage sales", "METRIC_ENERGY_SALES"),
+    ("Energy generation and storage leasing", "METRIC_ENERGY_LEASING"),
+    ("Energy generation and storage segment revenue", "METRIC_TOTAL_ENERGY_REVENUE"),
+    ("total energy revenue", "METRIC_TOTAL_ENERGY_REVENUE"),
+])
+def test_segment_revenue_labels_resolve(label, expected_metric_id):
+    assert resolve_canonical_metric(label) == expected_metric_id
+
+
+@pytest.mark.parametrize("label", [
+    "Automotive sales", "car sales", "revenue from car sales", "vehicle sales revenue",
+    "Automotive leasing", "car leasing revenue",
+    "Services and other", "services revenue",
+])
+def test_ambiguous_revenue_vs_cost_labels_stay_unresolved(label):
+    """These exact raw label texts are reused by Tesla for a different
+    line item under "Cost of revenues" with a different real value for
+    the same period -- resolving them to a single canonical id would
+    silently merge two different figures. Must stay unresolved (and thus
+    reachable only via the raw-label fallback, which will itself
+    correctly surface the resulting conflict rather than guess) until
+    the extraction pipeline captures which section of the table a row
+    came from."""
+    assert resolve_canonical_metric(label) is None
 
 
 # =============================================================================

@@ -142,13 +142,20 @@ def verify(
                 message=f'{f.metric_canonical_id} {_format_period(f.period)} is a restated figure.',
             ))
  
-    # Check 6: metric canonicalization ambiguity
+    # Check 6: metric canonicalization ambiguity. Deduplicated per distinct
+    # flag text, same reasoning as Checks 5/10: several corroborating
+    # source tables sharing the same unresolved raw label would otherwise
+    # each produce an identical warning.
+    seen_ambiguity_flags = set()
     for f in facts:
+        for flag in f.ambiguity_flags:
+            if flag and flag not in seen_ambiguity_flags:
+                seen_ambiguity_flags.add(flag)
+                warnings.append(Warning(
+                    severity='warning',
+                    message=f'Metric label matched with ambiguity: {flag}',
+                ))
         if f.ambiguity_flags:
-            warnings.append(Warning(
-                severity='warning',
-                message=f'Metric label matched with ambiguity: {", ".join(f.ambiguity_flags)}',
-            ))
             confidence = 'medium' if confidence == 'high' else confidence
  
     # Check 7: sanity band on computed growth rates. Only applies to

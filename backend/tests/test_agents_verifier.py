@@ -120,6 +120,20 @@ def test_fact_ambiguity_flags_downgrade_to_medium():
     assert confidence == "medium"
 
 
+def test_fact_ambiguity_flags_deduplicated_across_corroborating_sources():
+    """Several source tables sharing the same unresolved raw label (a
+    real case: Tesla's 'Automotive sales' reused across 4+ tables) must
+    not each produce an identical warning."""
+    facts = [
+        _fact(table_id="X::p1::t1", ambiguity_flags=["unrecognized_label: 'Automotive sales' did not match the canonical metric registry"]),
+        _fact(table_id="X::p2::t1", ambiguity_flags=["unrecognized_label: 'Automotive sales' did not match the canonical metric registry"]),
+    ]
+    warnings, confidence = verify("q", _plan(), facts, None)
+    assert confidence == "medium"
+    ambiguity_warnings = [w for w in warnings if "Metric label matched with ambiguity" in w.message]
+    assert len(ambiguity_warnings) == 1
+
+
 # Check 7: sanity band, growth_calc only
 def test_extreme_growth_rate_downgrades_to_low():
     plan = _plan(question_type=QuestionType.GROWTH_CALC, periods=[Period(year=2024), Period(year=2025)])
