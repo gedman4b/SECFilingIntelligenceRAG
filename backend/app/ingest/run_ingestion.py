@@ -59,6 +59,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
+from urllib.parse import quote
 
 from app.ingest.canonicalizer import canonicalize_facts
 from app.ingest.fact_extractor import FilingContext, extract_facts_from_tables
@@ -152,7 +153,14 @@ def ingest_filing(spec: FilingSpec, conn, chroma_collection) -> None:
         chroma_collection: Open collection from store.vector_store.get_collection().
     """
     pdf_path = PDF_DIR / spec.pdf_filename
-    filing_url = f"file://{pdf_path}"
+    # A path relative to the backend's own /pdfs static mount (see
+    # app/main.py), not an absolute file:// path -- a citation link has to
+    # resolve for whoever is looking at the response, not just on the
+    # machine ingestion happened to run on. The query path (main.py)
+    # resolves this into an absolute URL using the actual incoming
+    # request's host, so the same stored value works unchanged whether
+    # it's served from localhost, a Vercel preview, or production.
+    filing_url = f"/pdfs/{quote(spec.pdf_filename)}"
 
     log.info("Ingesting %s (%s)", spec.filing_id, spec.pdf_filename)
     parsed = parse_filing(str(pdf_path), spec.filing_id)

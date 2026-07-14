@@ -16,9 +16,13 @@ if os.environ.get('VERCEL'):
 
 import logging
 import time
+from pathlib import Path
+from typing import List
+from urllib.parse import urljoin
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from app.schemas import QueryPlan, QueryRequest, QueryResponse, Fact
 from app.agents.planner import plan_query
 from app.agents.fact_retriever import (
@@ -56,9 +60,40 @@ app.add_middleware(
     allow_methods=['*'],
     allow_headers=['*'],
 )
- 
+
+# Citations have to point somewhere a real user's browser can actually
+# fetch a PDF from -- not a file:// path that only resolves on whatever
+# machine ingestion happened to run on. Source filings are bundled with
+# the deployment (app/ingest/pdfs/, ~12MB for the current 6-filing
+# corpus) and served directly from here, at the same URL scheme
+# (/pdfs/<filename>) that ingest/run_ingestion.py stores in filing_url.
+# Guarded by .exists() so a test environment or a checkout without the
+# (gitignored) PDF corpus doesn't fail to import this module at all --
+# StaticFiles raises immediately if its directory is missing.
+PDF_DIR = Path(__file__).resolve().parent / 'ingest' / 'pdfs'
+if PDF_DIR.exists():
+    app.mount('/pdfs', StaticFiles(directory=str(PDF_DIR)), name='pdfs')
+
+
+def _absolutize_filing_urls(facts: List[Fact], base_url: str) -> None:
+    """Rewrite each fact's filing_url from the stored /pdfs/<filename>
+    path into an absolute URL against the actual incoming request's host,
+    in place.
+
+    Storing a host-relative path at ingestion time (rather than baking a
+    domain into fact_store.db) means the same stored data produces
+    correct citation links whether this backend is answering from
+    localhost, a Vercel preview deployment, or production -- there is no
+    stale domain or local filesystem path to go wrong when where this
+    runs changes.
+    """
+    for f in facts:
+        if f.filing_url.startswith('/'):
+            f.filing_url = urljoin(base_url, f.filing_url)
+
+
 @app.post('/query', response_model=QueryResponse)
-def query(request: QueryRequest) -> QueryResponse:
+def query(request: QueryRequest, http_request: Request) -> QueryResponse:
     question = request.question
     request_start = time.perf_counter()
 
@@ -115,6 +150,12 @@ def query(request: QueryRequest) -> QueryResponse:
 
     # Stage E: verify BEFORE composing
     warnings, confidence = verify(question, plan, facts, computed, prose)
+
+    # resolved_facts' filing_url is still the stored /pdfs/<filename>
+    # form at this point; compose_answer() builds `citations` directly
+    # from these Fact objects, so the host has to be filled in before
+    # that, not after.
+    _absolutize_filing_urls(resolved_facts, str(http_request.base_url))
 
     # Stage F: compose
     response = compose_answer(
