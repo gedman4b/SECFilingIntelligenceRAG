@@ -91,6 +91,26 @@ def test_no_facts_is_fine_for_narrative_question():
     assert confidence == "high"
 
 
+def test_narrative_with_a_resolved_period_is_not_blocked_by_check_3():
+    """Regression guard for a real bug found via live testing: narrative
+    questions never populate `facts` (they ground in `prose` instead),
+    but the Planner routinely resolves relative-time phrases like "the
+    previous quarter" into a concrete Period (planner.py rule 10). Check
+    3 used to run unconditionally, so an always-empty `facts` list could
+    never satisfy it -- "What did management cite as risks from the
+    previous quarter for Tesla?" failed with "Requested period Y2026 Q1
+    not found" despite good passages having been retrieved. Check 3 must
+    be scoped to the question types that actually populate `facts`."""
+    plan = _plan(question_type=QuestionType.NARRATIVE, periods=[Period(year=2026, quarter=1)])
+    passages = [ProsePassage(
+        chunk_id="c1", filing_id="X", section_type="risk_factors",
+        page_start=1, page_end=1, text="risk text", distance=0.1,
+    )]
+    warnings, confidence = verify("q", plan, [], None, prose=passages)
+    assert confidence == "high"
+    assert not any("not found" in w.message for w in warnings)
+
+
 # Check 3: period alignment
 def test_missing_requested_period_is_insufficient_data():
     plan = _plan(periods=[Period(year=2025), Period(year=2024)])

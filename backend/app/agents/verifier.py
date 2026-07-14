@@ -105,18 +105,30 @@ def verify(
         return warnings, 'insufficient_data'
 
 
-    # Check 3: period alignment
-    for period in plan.periods:
-        matched = any(f.period.year == period.year
-                     and f.period.quarter == period.quarter
-                     for f in facts)
-        if not matched:
-            warnings.append(Warning(
-                severity='error',
-                message=f'Requested period Y{period.year} Q{period.quarter} not found.',
-                field='period',
-            ))
-            confidence = 'insufficient_data'
+    # Check 3: period alignment. `facts` is only ever populated for the
+    # numeric-family question types (Stage B/C in main.py) -- narrative
+    # questions ground their answer in `prose` instead (Check 8 covers
+    # that) and never populate `facts` at all. Without this guard, any
+    # narrative question where the Planner resolved a relative-time
+    # phrase into a concrete period (e.g. "the previous quarter", per
+    # planner.py rule 10) would always fail here, since an always-empty
+    # `facts` list can never contain a matching period -- confirmed via
+    # live testing: "What did management cite as risks from the previous
+    # quarter for Tesla?" failed with "Requested period Y2026 Q1 not
+    # found" despite prose retrieval never having been given a chance to
+    # run first.
+    if plan.question_type in ('numeric_lookup', 'growth_calc', 'comparison', 'margin_calc', 'ranking'):
+        for period in plan.periods:
+            matched = any(f.period.year == period.year
+                         and f.period.quarter == period.quarter
+                         for f in facts)
+            if not matched:
+                warnings.append(Warning(
+                    severity='error',
+                    message=f'Requested period Y{period.year} Q{period.quarter} not found.',
+                    field='period',
+                ))
+                confidence = 'insufficient_data'
  
     # Check 4: GAAP consistency
     if plan.gaap_preference == 'gaap':

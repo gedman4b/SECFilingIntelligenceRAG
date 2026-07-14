@@ -213,6 +213,20 @@ def _chunk_prose_section(section: ProseSection) -> List[ProseChunkRecord]:
     CHUNK_TARGET_CHARS without splitting a line, so the only way a chunk
     exceeds the target is a single unusually long line.
 
+    The fallback used to trigger only when the WHOLE section produced at
+    most one blank-line paragraph. That missed a real case, found via live
+    testing: Tesla's ~150,000-character risk_factors section has a
+    handful of blank-line breaks scattered sparsely through it, so
+    splitting on "\\n\\n" produced exactly 3 "paragraphs" -- not <=1 -- but
+    two of them were 62,585 and 87,226 characters, i.e. the entire
+    section minus a couple of accidental breaks, not real paragraphs.
+    Those got embedded as single chunks; the embedding model only
+    encodes roughly its first ~1500-2500 characters, so the other
+    98%+ of that content was invisible to every future search regardless
+    of what was actually being asked. The fallback now also triggers
+    per-paragraph: any individual paragraph still wildly oversized after
+    the blank-line split gets re-split on single newlines too.
+
     Args:
         section: A prose section extracted by ingest/pdf_parser.py.
 
@@ -223,6 +237,17 @@ def _chunk_prose_section(section: ProseSection) -> List[ProseChunkRecord]:
     paragraphs = [p.strip() for p in section.text.split("\n\n") if p.strip()]
     if len(paragraphs) <= 1:
         paragraphs = [p.strip() for p in section.text.split("\n") if p.strip()]
+    else:
+        # A "paragraph" many times the target size is not one paragraph
+        # that happens to run long; it is unbroken raw text that the
+        # blank-line split failed to divide at all.
+        expanded: List[str] = []
+        for p in paragraphs:
+            if len(p) > CHUNK_TARGET_CHARS * 3:
+                expanded.extend(line.strip() for line in p.split("\n") if line.strip())
+            else:
+                expanded.append(p)
+        paragraphs = expanded
 
     chunks: List[ProseChunkRecord] = []
     buffer: List[str] = []
