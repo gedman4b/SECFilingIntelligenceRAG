@@ -1,6 +1,5 @@
 __pycache__/
 docs/
-pdfs/
 .venv/
 .env*
 .vercel
