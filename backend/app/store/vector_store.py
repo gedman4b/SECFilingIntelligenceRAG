@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 from pathlib import Path
 from typing import List, Optional
 
@@ -57,13 +58,52 @@ DEFAULT_PERSIST_DIR = Path(__file__).resolve().parent / "chroma_data"
 COLLECTION_NAME = "prose_chunks"
 
 
+_vercel_persist_dir_ready = False
+
+
+def _vercel_writable_persist_dir() -> str:
+    """Return a writable copy of chroma_data for Vercel's deployed runtime.
+
+    Vercel's deployed filesystem is read-only everywhere except /tmp.
+    chromadb.PersistentClient needs to open (and, on first touch, write
+    to) its own SQLite-backed tenant/database metadata store even for a
+    read-only query -- confirmed via a live Vercel function traceback,
+    not a guess: opening the bundled (read-only) chroma_data directly
+    fails with a cryptic "Could not connect to tenant default_tenant. Are
+    you sure it exists?" raised from deep inside chromadb's Rust
+    bindings, which gives no hint that the real cause is a read-only
+    filesystem. So on Vercel the bundled data is copied to /tmp once per
+    cold start (memoized so repeat requests on a warm instance don't
+    re-copy) and that writable copy is used instead.
+
+    Returns:
+        Path to the writable /tmp copy of chroma_data.
+    """
+    global _vercel_persist_dir_ready
+    # chromadb's bundled ONNX embedding model also downloads to
+    # $HOME/.cache on first use; $HOME may not be set to a writable
+    # directory by default in Vercel's Python runtime.
+    os.environ.setdefault("HOME", "/tmp")
+    tmp_dir = "/tmp/chroma_data"
+    if not _vercel_persist_dir_ready:
+        if not os.path.exists(tmp_dir) and DEFAULT_PERSIST_DIR.exists():
+            shutil.copytree(DEFAULT_PERSIST_DIR, tmp_dir)
+        _vercel_persist_dir_ready = True
+    return tmp_dir
+
+
 def _resolve_persist_dir() -> str:
     """Return the Chroma persistence directory, honoring CHROMA_PERSIST_DIR.
 
     Returns:
         Absolute path to the Chroma persistence directory.
     """
-    return os.environ.get("CHROMA_PERSIST_DIR", str(DEFAULT_PERSIST_DIR))
+    override = os.environ.get("CHROMA_PERSIST_DIR")
+    if override:
+        return override
+    if os.environ.get("VERCEL"):
+        return _vercel_writable_persist_dir()
+    return str(DEFAULT_PERSIST_DIR)
 
 
 def get_collection(persist_dir: Optional[str] = None) -> Collection:

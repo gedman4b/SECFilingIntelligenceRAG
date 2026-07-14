@@ -20,10 +20,19 @@ submitBtn.addEventListener('click', async () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ question }),
     });
+    if (!res.ok) {
+      throw new Error(`Backend returned HTTP ${res.status} ${res.statusText}`);
+    }
     const data = await res.json();
     renderResponse(data);
   } catch (err) {
+    responseSection.classList.remove('hidden');
+    confidenceBadge.className = 'confidence-badge conf-insufficient';
+    confidenceBadge.textContent = 'ERROR';
     answerText.textContent = 'Error: ' + err.message;
+    calculationBlock.innerHTML = '';
+    warningsBlock.innerHTML = '';
+    citationsBlock.innerHTML = '';
   } finally {
     submitBtn.disabled = false;
     submitBtn.textContent = 'Ask';

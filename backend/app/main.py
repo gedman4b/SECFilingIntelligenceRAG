@@ -1,3 +1,19 @@
+import os
+
+# Must run before any downstream import touches chromadb: chromadb's
+# bundled ONNX embedding function resolves Path.home() into a class
+# attribute (ONNXMiniLM_L6_V2.DOWNLOAD_PATH) at class-definition time,
+# i.e. the moment "import chromadb" first executes anywhere in the
+# process -- not lazily per call. Vercel's deployed filesystem sets HOME
+# to a read-only sandbox user directory, and HOME cannot be set as a
+# Vercel project environment variable (the name is reserved), so it has
+# to be patched here, as the very first lines of the actual process
+# entrypoint, before app.agents.prose_retriever -> app.store.vector_store
+# -> chromadb gets imported below. Confirmed against a live Vercel
+# traceback: OSError: [Errno 30] Read-only file system: '/home/sbx_user...'.
+if os.environ.get('VERCEL'):
+    os.environ.setdefault('HOME', '/tmp')
+
 import logging
 import time
 
@@ -22,10 +38,20 @@ from app.agents.answer_composer import compose_answer
 logging.basicConfig(level=logging.INFO, format='%(levelname)s %(name)s: %(message)s')
 log = logging.getLogger(__name__)
 
+# ALLOWED_ORIGINS is a comma-separated list, e.g. "https://secfilingsint.vercel.app,http://localhost:3000".
+# Defaults to local dev only so a deployed backend fails closed (blocks
+# the browser, doesn't silently allow every origin) until the deployed
+# frontend's actual origin is configured.
+_allowed_origins_env = os.environ.get('ALLOWED_ORIGINS')
+ALLOWED_ORIGINS = (
+    [origin.strip() for origin in _allowed_origins_env.split(',') if origin.strip()]
+    if _allowed_origins_env else ['http://localhost:3000']
+)
+
 app = FastAPI(title='SEC Filing Intelligence')
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=['http://localhost:3000'],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=['*'],
     allow_headers=['*'],
