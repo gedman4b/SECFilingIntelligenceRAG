@@ -13,7 +13,11 @@ Live deployment: backend `https://secfilintbackend.vercel.app`, frontend
 `https://secfilingsint.vercel.app`. Both confirmed live as of this
 writing (`GET /health` → 200 on the backend; frontend serving 200).
 
-Test suite: 191 pytest tests, all passing. Eval benchmark: 20/20 cases
+Test suite: 202 pytest tests, all passing, confirmed hermetic (the full
+suite passes with `ANTHROPIC_API_KEY` explicitly unset — no test depends
+on real network access, including the new LLM-assisted resolution tier
+in §6, per AGENTS.md: "No test that requires network access to a live
+LLM provider runs in the default suite"). Eval benchmark: 20/20 cases
 passing (`app/eval/benchmark.py` / `app/eval/runner.py`).
 
 ---
@@ -79,7 +83,7 @@ needing date-grounded period resolution. `app/eval/benchmark.py` covers
 `narrative` (2) with hand-verified ground truth. `margin_calc` and
 `ranking` are validated by live testing with hand-checked arithmetic
 rather than the automated benchmark — a named, tracked gap, not a silent
-one (see §12).
+one (see §11).
 
 ---
 
@@ -139,6 +143,7 @@ one concrete failure mode, not a generic "confidence score":
 | Confidence limitations | schema-level | `confidence: high \| medium \| low \| insufficient_data`, and the Composer is forbidden from ever restating it in different words than the exact given value |
 | Multi-source conflicts (not explicitly named in the brief, but a real corpus phenomenon) | Check 9 | same (metric, period) reported differently by 2+ tables → disclosed if resolvable, fails closed if not |
 | Margin/ranking-specific insufficiency | Checks 2b, 2c, 3, 7, 8 | question-type-specific fail-closed conditions |
+| Metric synonym gaps (a phrasing gap, not named in the brief's list verbatim, but the same "multiple possible interpretations" concern) | Check 6 | a match found only via the LLM-assisted synonym tier (§6) is flagged `llm_synonym_match` on the `Fact`, downgrading confidence to `medium` — never silently treated as an exact match |
 
 **A concrete, hard-won example of "fail closed, don't guess":** Tesla's
 own income statement reuses the *exact text* "Automotive sales" for two
@@ -183,11 +188,15 @@ Query Planner (LLM, tool-use schema-constrained)
   (`app/agents/fact_retriever.py`) picks a winner among multiple
   corroborating source tables by table richness; Check 9 in the Verifier
   handles the case where reconciliation *can't* pick a winner.
-- **Fallback mechanisms:** the raw-label fallback
-  (`_retrieve_facts_by_raw_label()`, `app/agents/fact_retriever.py:105`)
-  for metrics with no canonical registry entry; fail-closed
-  `insufficient_data` as the universal fallback when any stage can't
-  produce a trustworthy answer.
+- **Fallback mechanisms:** metric resolution is a three-tier cascade
+  (`_resolve_metric_facts()`, `app/agents/fact_retriever.py:211`): the
+  raw-label fallback (`_retrieve_facts_by_raw_label()`,
+  `app/agents/fact_retriever.py:111`) for metrics with no canonical
+  registry entry, then LLM-assisted synonym resolution
+  (`resolve_canonical_metric_via_llm()`,
+  `app/ingest/canonicalizer.py:561`, detailed in §6) as the last resort
+  before failing closed; fail-closed `insufficient_data` as the universal
+  fallback when any stage still can't produce a trustworthy answer.
 
 This is not incidental structure — it is the direct response to the
 brief's own diagnosis of why the *previous* system failed ("it
@@ -208,21 +217,61 @@ implicit").
 (`WHERE company_ticker = ? AND metric_canonical_id = ? AND year = ? AND
 quarter = ?`), never embeddings. Prose (narrative) retrieval uses
 Chroma + a local embedding model. This split is Guard 1 of the design:
-*"numeric queries never use embeddings."*
+*"numeric queries never use embeddings."* Metric resolution — turning a
+user's phrase into a `metric_canonical_id` — is a three-tier cascade
+(`agents/fact_retriever.py:_resolve_metric_facts()`), cheapest and
+safest first:
+1. **Exact canonical match** (`resolve_canonical_metric()`) — free,
+   deterministic, the common case.
+2. **Raw-label fallback** (`_retrieve_facts_by_raw_label()`) — still
+   exact-match, just against facts' own stored raw label text instead of
+   the curated registry, for a metric with no registry entry at all
+   (e.g. a business-segment line).
+3. **LLM-assisted synonym resolution** (`resolve_canonical_metric_via_llm()`,
+   `app/ingest/canonicalizer.py`) — the last resort, only reached when
+   both tiers above find nothing.
 
-**What embeddings are good/bad at, and how that shaped the design:**
-Embeddings encode topical similarity, not exact label identity or
-numerical magnitude — "Net income" and "Net income attributable to common
-stockholders" would embed as nearly identical vectors despite being
-different dollar figures. The registry
+**What embeddings are good/bad at, and how that shaped the design —
+including tier 3:** Embeddings encode topical similarity, not exact
+label identity or numerical magnitude — "Net income" and "Net income
+attributable to common stockholders" would embed as nearly identical
+vectors despite being different dollar figures. The registry
 (`app/ingest/canonicalizer.py`) resolves raw labels to canonical IDs by
 exact-match-after-normalization specifically to prevent this collision.
-This was validated the hard way, twice, this session:
+This was validated the hard way, three times, this project:
 - The Net income / Net income attributable near-miss the brief itself
   names is a real, distinct canonical ID pair in the registry.
 - The "Automotive sales" revenue-vs-cost-of-revenue collision (§4 above)
   is the *same class of bug*, discovered live, and fixed by refusing to
   force a canonical mapping rather than by loosening the matching rule.
+- Tier 3 itself exists because of a third instance of the identical
+  underlying problem, seen from the opposite direction: real, answerable
+  questions ("Tesla's profit", "revenue from car sales") were failing
+  closed for want of a curated synonym, and manually patching the
+  registry one hand-noticed live-test failure at a time doesn't scale.
+
+Tier 3 is deliberately **not** the thing Guard 1 bans, even though it is
+also LLM-assisted. Guard 1's actual concern is a *continuous* similarity
+search that always returns its nearest neighbor, ranked by distance, with
+no way to say "none of these" — exactly the near-miss-collision failure
+mode above. Tier 3 instead does closed-set *classification*: the model
+picks from the exact, already-curated list of registered metric ids (the
+same 22-entry registry, not a separate embedding index) or declines, and
+its answer is validated against that literal list before being trusted at
+all — a hallucinated id is treated identically to an explicit decline,
+fail closed. It is closer in kind to what the Query Planner already does
+(LLM extracts structured intent from open-ended text, validated by
+Pydantic afterward) than to embedding-based nearest-neighbor search. Every
+match found this way is flagged `llm_synonym_match` on the resulting
+`Fact` and downgrades confidence to `medium` (Check 6) — it can never
+look as certain as an exact match, so the honest-uncertainty guarantee
+holds even though the coverage gap is closed. Verified live, not just
+unit-tested: "How much cash does Tesla have on hand?" — a phrase that
+appears nowhere in the code or tests — correctly resolved to
+`METRIC_CASH_AND_EQUIVALENTS` with the real value and an explicit
+`confidence: medium`; separately, "margin" alone (genuinely ambiguous
+between gross/operating/net margin) was correctly **declined** rather
+than guessed.
 
 **Where arithmetic happens:** 100% in `app/agents/numerical_reasoner.py`.
 No other module performs arithmetic on a `Fact.value`. This was not just
@@ -296,7 +345,9 @@ benchmark-tested or live-tested with hand-checked arithmetic:
 | "SG&A grow as a percentage of revenue" | `margin_calc` | ✅ live-tested: Tesla SG&A/revenue, both periods + delta verified by hand |
 | "gross margin for the last two years" | `margin_calc`, multi-period | ✅ live-tested: Tesla gross margin FY2023–FY2025, verified by hand |
 | "which metrics deteriorated the most" | `ranking`, `most_deteriorated` | ✅ live-tested, including the deterministic no-company-specified guard (Check 1b) |
-| "what did management cite as risks" | `narrative` | ✅ live-tested; also where a real prose-chunking bug was found and fixed this session (see §12) |
+| "what did management cite as risks" | `narrative` | ✅ live-tested; also where a real prose-chunking bug was found and fixed this session (see §11) |
+| "net income growth" phrased colloquially, e.g. "change in Tesla's profit" (a real user-reported failure: bare "profit" wasn't a curated synonym) | `growth_calc`, exact-match tier | ✅ live-tested: fixed by adding "profit" as a curated `METRIC_NET_INCOME` synonym after confirming no collision risk |
+| a metric phrase with no curated synonym at all, e.g. "cash on hand" | `numeric_lookup`, LLM-assisted tier (§6) | ✅ live-tested: resolved correctly via tier 3, `confidence: medium`, `llm_synonym_match` disclosed |
 
 ---
 
@@ -321,9 +372,14 @@ benchmark-tested or live-tested with hand-checked arithmetic:
 - **Applied reasoning / engineering judgment:** every fix in this
   project's history started from a live-tested failure, not a
   speculative one — e.g. the margin_calc arithmetic-leakage bugs, the
-  Automotive sales collision, the prose-chunking bug (§12) were all
+  Automotive sales collision, the prose-chunking bug (§11) were all
   found by actually running questions against the deployed system, not
-  inferred from reading the code.
+  inferred from reading the code. The LLM-assisted synonym tier (§6) is
+  the same discipline applied to a design *decision*, not just a bug: it
+  was built only after confirming, precisely, why the obvious-looking
+  fix ("just use the vector database for this too") would have
+  reintroduced the exact near-miss-collision risk this project exists to
+  prevent, and designed around that constraint instead of past it.
 - **Trust & traceability:** the confidence field is never allowed to
   contradict the narrative text (Composer rule 7); citation links
   resolve to real, byte-identical PDFs; the Verifier is a hard gate, not
@@ -364,6 +420,18 @@ benchmark-tested or live-tested with hand-checked arithmetic:
   other companies (Microsoft, Amazon, etc.) will honestly return
   `insufficient_data`, not an error — this is the system correctly
   reporting a real scope limit, not a bug.
+- The LLM-assisted synonym tier (§6) adds a real LLM call, with its
+  latency and cost, to any query whose metric phrase resolves at neither
+  of the two deterministic tiers — including genuinely unanswerable
+  questions, which now cost one extra API call before correctly failing
+  closed. Its *precision* is tested (every unit test mocks the model's
+  response and checks the validation/flagging logic around it), but its
+  *recall* — whether the real, live model actually resolves a given novel
+  phrase correctly — is only checked by live testing, not by the
+  automated suite, since the tests deliberately never call the real API.
+  A future prompt change or model upgrade that made it decline more
+  often, or resolve things at lower quality, would not be caught by
+  `pytest` the way a `growth_calc` regression would be.
 - A significant, previously-invisible bug was found and fixed this
   session: `_chunk_prose_section()` (`app/ingest/run_ingestion.py`) was
   supposed to split narrative sections into ~1,500-character chunks, but
