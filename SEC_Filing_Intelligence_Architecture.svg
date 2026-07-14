@@ -1,0 +1,275 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 1580" font-family="Calibri, Arial, sans-serif">
+
+  <!-- =============== STYLES =============== -->
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#404040"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#1F4E79"/>
+    </marker>
+
+    <style>
+      .title-main { font-size: 26px; font-weight: 700; fill: #1F4E79; }
+      .title-sub { font-size: 15px; font-style: italic; fill: #666666; }
+      .col-header { font-size: 18px; font-weight: 700; fill: #FFFFFF; }
+      .col-header-sub { font-size: 12px; font-weight: 400; fill: #FFFFFF; opacity: 0.9; }
+      .box-label { font-size: 13px; font-weight: 700; fill: #000000; }
+      .box-detail { font-size: 11px; fill: #333333; }
+      .box-detail-mono { font-size: 10.5px; fill: #333333; font-family: Consolas, monospace; }
+      .io-label { font-size: 14px; font-weight: 700; fill: #000000; }
+      .flow-label { font-size: 10.5px; fill: #666666; font-style: italic; }
+      .datastore-label { font-size: 14px; font-weight: 700; fill: #000000; }
+      .legend-label { font-size: 12px; fill: #000000; }
+      .legend-title { font-size: 14px; font-weight: 700; fill: #000000; }
+
+      .box-llm { fill: #DEEBF6; stroke: #2E75B6; stroke-width: 2; }
+      .box-deterministic { fill: #F2F2F2; stroke: #808080; stroke-width: 2; }
+      .box-datastore { fill: #FFF2CC; stroke: #BF8F00; stroke-width: 2; }
+      .box-trust { fill: #FCE4D6; stroke: #C55A11; stroke-width: 3; }
+      .box-io { fill: #FFFFFF; stroke: #000000; stroke-width: 2; }
+
+      .arrow-flow { fill: none; stroke: #404040; stroke-width: 2; }
+      .arrow-cross { fill: none; stroke: #1F4E79; stroke-width: 2.5; stroke-dasharray: 8,4; }
+      .divider { stroke: #CCCCCC; stroke-width: 1; }
+    </style>
+  </defs>
+
+  <!-- =============== BACKGROUND =============== -->
+  <rect width="1500" height="1580" fill="#FFFFFF"/>
+
+  <!-- =============== TITLE =============== -->
+  <text x="750" y="45" text-anchor="middle" class="title-main">SEC Filing Intelligence</text>
+  <text x="750" y="70" text-anchor="middle" class="title-sub">System Architecture: two pipelines, one canonical fact store</text>
+  <line x1="60" y1="90" x2="1440" y2="90" class="divider"/>
+
+  <!-- =============== COLUMN HEADERS =============== -->
+  <!-- Offline column header -->
+  <rect x="50" y="110" width="640" height="50" fill="#1F4E79"/>
+  <text x="370" y="135" text-anchor="middle" class="col-header">OFFLINE INGESTION PIPELINE</text>
+  <text x="370" y="152" text-anchor="middle" class="col-header-sub">Runs once per new filing. Structures the corpus into a canonical fact store.</text>
+
+  <!-- Online column header -->
+  <rect x="810" y="110" width="640" height="50" fill="#2E75B6"/>
+  <text x="1130" y="135" text-anchor="middle" class="col-header">ONLINE QUERY PIPELINE</text>
+  <text x="1130" y="152" text-anchor="middle" class="col-header-sub">Runs on every user question. Deterministic where correctness matters.</text>
+
+  <!-- =============== OFFLINE PIPELINE (Left Column) =============== -->
+
+  <!-- Input: PDF Filing -->
+  <path d="M 190 180 L 550 180 L 570 210 L 550 240 L 190 240 L 170 210 Z" class="box-io"/>
+  <text x="370" y="205" text-anchor="middle" class="io-label">PDF Filing (10-K, 10-Q)</text>
+  <text x="370" y="225" text-anchor="middle" class="box-detail">Purchased archive, not live EDGAR API</text>
+
+  <!-- Arrow -->
+  <line x1="370" y1="240" x2="370" y2="275" class="arrow-flow" marker-end="url(#arrow)"/>
+
+  <!-- [1] PDF Parser -->
+  <rect x="120" y="278" width="500" height="90" rx="4" class="box-deterministic"/>
+  <text x="140" y="302" class="box-label">[1] Layout-aware PDF Parser</text>
+  <text x="140" y="322" class="box-detail">pdfplumber preserves row and column structure of tables.</text>
+  <text x="140" y="340" class="box-detail">Separates output into two streams:</text>
+  <text x="140" y="358" class="box-detail-mono">tables[] with row/col preserved  |  narrative_sections[]</text>
+
+  <!-- Arrow -->
+  <line x1="370" y1="368" x2="370" y2="405" class="arrow-flow" marker-end="url(#arrow)"/>
+
+  <!-- [2] Table Classifier -->
+  <rect x="120" y="408" width="500" height="90" rx="4" class="box-llm"/>
+  <text x="140" y="432" class="box-label">[2] Table Classifier (LLM, schema-constrained)</text>
+  <text x="140" y="452" class="box-detail">Classifies each table into one of six categories:</text>
+  <text x="140" y="470" class="box-detail-mono">income_stmt | balance_sheet | cash_flow |</text>
+  <text x="140" y="486" class="box-detail-mono">non_gaap_reconciliation | segment | other</text>
+
+  <!-- Arrow -->
+  <line x1="370" y1="498" x2="370" y2="535" class="arrow-flow" marker-end="url(#arrow)"/>
+
+  <!-- [3] Fact Extractor -->
+  <rect x="120" y="538" width="500" height="90" rx="4" class="box-llm"/>
+  <text x="140" y="562" class="box-label">[3] Fact Extractor (LLM + rule-based validation)</text>
+  <text x="140" y="582" class="box-detail">Two-pass. LLM extracts typed rows; rules validate numeric parsing,</text>
+  <text x="140" y="600" class="box-detail">unit consistency, and period format.</text>
+  <text x="140" y="618" class="box-detail-mono">{ label, period, value, units, is_gaap, is_restated, page, table_id }</text>
+
+  <!-- Arrow -->
+  <line x1="370" y1="628" x2="370" y2="665" class="arrow-flow" marker-end="url(#arrow)"/>
+
+  <!-- [4] Metric Canonicalizer -->
+  <rect x="120" y="668" width="500" height="90" rx="4" class="box-llm"/>
+  <text x="140" y="692" class="box-label">[4] Metric Canonicalizer</text>
+  <text x="140" y="712" class="box-detail">Maps raw labels to canonical metric IDs. Ambiguous labels are FLAGGED,</text>
+  <text x="140" y="730" class="box-detail">not force-mapped. This is the primary near-miss guard.</text>
+  <text x="140" y="748" class="box-detail-mono">"Net income" -&gt; METRIC_NET_INCOME</text>
+
+  <!-- Arrow -->
+  <line x1="370" y1="758" x2="370" y2="795" class="arrow-flow" marker-end="url(#arrow)"/>
+
+  <!-- [5] Fact Store (data store cylinder-ish) -->
+  <rect x="90" y="800" width="560" height="150" rx="4" class="box-datastore"/>
+  <ellipse cx="370" cy="805" rx="280" ry="10" fill="#FFF2CC" stroke="#BF8F00" stroke-width="2"/>
+
+  <text x="370" y="828" text-anchor="middle" class="datastore-label">[5] Canonical Fact Store</text>
+  <text x="370" y="848" text-anchor="middle" class="box-detail">SQLite for prototype. Postgres in production.</text>
+
+  <line x1="150" y1="862" x2="590" y2="862" stroke="#BF8F00" stroke-width="1" opacity="0.6"/>
+
+  <text x="150" y="882" class="box-detail-mono">facts             (typed numeric values with full provenance)</text>
+  <text x="150" y="900" class="box-detail-mono">filings           (filing metadata: URL, date, form type)</text>
+  <text x="150" y="918" class="box-detail-mono">prose_chunks      (narrative sections from MD&amp;A, risks)</text>
+  <text x="150" y="936" class="box-detail-mono">prose_embeddings  (VECTOR INDEX SCOPED TO PROSE ONLY)</text>
+
+  <!-- =============== ONLINE PIPELINE (Right Column) =============== -->
+
+  <!-- Input: User Question -->
+  <path d="M 950 180 L 1310 180 L 1330 210 L 1310 240 L 950 240 L 930 210 Z" class="box-io"/>
+  <text x="1130" y="205" text-anchor="middle" class="io-label">User Question</text>
+  <text x="1130" y="225" text-anchor="middle" class="box-detail">Natural language, potentially ambiguous</text>
+
+  <!-- Arrow -->
+  <line x1="1130" y1="240" x2="1130" y2="275" class="arrow-flow" marker-end="url(#arrow)"/>
+
+  <!-- [A] Query Planner -->
+  <rect x="880" y="278" width="500" height="90" rx="4" class="box-llm"/>
+  <text x="900" y="302" class="box-label">[A] Query Planner Agent (LLM, schema-constrained)</text>
+  <text x="900" y="322" class="box-detail">Classifies question and produces a typed QueryPlan.</text>
+  <text x="900" y="340" class="box-detail-mono">question_type: numeric_lookup | growth_calc |</text>
+  <text x="900" y="356" class="box-detail-mono">               narrative | comparison | unknown</text>
+
+  <!-- Branch label -->
+  <line x1="1130" y1="368" x2="1130" y2="395" class="arrow-flow" marker-end="url(#arrow)"/>
+  <text x="1140" y="388" class="flow-label">route by question_type</text>
+
+  <!-- Router visual - horizontal split -->
+  <line x1="1000" y1="410" x2="1260" y2="410" class="arrow-flow"/>
+  <line x1="1000" y1="410" x2="1000" y2="435" class="arrow-flow" marker-end="url(#arrow)"/>
+  <line x1="1260" y1="410" x2="1260" y2="435" class="arrow-flow" marker-end="url(#arrow)"/>
+
+  <text x="920" y="425" class="flow-label">numeric</text>
+  <text x="1265" y="425" class="flow-label">narrative</text>
+
+  <!-- [B] Fact Retriever -->
+  <rect x="880" y="438" width="240" height="90" rx="4" class="box-deterministic"/>
+  <text x="898" y="462" class="box-label">[B] Fact Retriever</text>
+  <text x="898" y="480" class="box-detail">Deterministic SQL.</text>
+  <text x="898" y="496" class="box-detail">NO LLM. NO embeddings.</text>
+  <text x="898" y="514" class="box-detail-mono">SELECT ... WHERE</text>
+  <text x="898" y="524" class="box-detail-mono">metric_id, period match</text>
+
+  <!-- [D] Prose Retriever -->
+  <rect x="1140" y="438" width="240" height="90" rx="4" class="box-deterministic"/>
+  <text x="1158" y="462" class="box-label">[D] Prose Retriever</text>
+  <text x="1158" y="480" class="box-detail">Vector search over</text>
+  <text x="1158" y="496" class="box-detail">PROSE ONLY. Embeddings</text>
+  <text x="1158" y="512" class="box-detail">used correctly here:</text>
+  <text x="1158" y="524" class="box-detail">paraphrase tolerance.</text>
+
+  <!-- Arrows down from B and D -->
+  <line x1="1000" y1="528" x2="1000" y2="555" class="arrow-flow" marker-end="url(#arrow)"/>
+  <line x1="1260" y1="528" x2="1260" y2="700" class="arrow-flow"/>
+
+  <!-- [C] Numerical Reasoner (only in numeric path) -->
+  <rect x="880" y="558" width="240" height="80" rx="4" class="box-deterministic"/>
+  <text x="898" y="580" class="box-label">[C] Numerical Reasoner</text>
+  <text x="898" y="598" class="box-detail">DETERMINISTIC PYTHON.</text>
+  <text x="898" y="612" class="box-detail">Growth rates, margins,</text>
+  <text x="898" y="628" class="box-detail">deltas. Never the LLM.</text>
+
+  <!-- Arrow C to merge -->
+  <line x1="1000" y1="638" x2="1000" y2="700" class="arrow-flow"/>
+
+  <!-- Merge line into Verifier -->
+  <line x1="1000" y1="700" x2="1260" y2="700" class="arrow-flow"/>
+  <line x1="1130" y1="700" x2="1130" y2="722" class="arrow-flow" marker-end="url(#arrow)"/>
+
+  <!-- [E] Verifier / Critic - TRUST BOUNDARY -->
+  <rect x="880" y="725" width="500" height="115" rx="4" class="box-trust"/>
+  <text x="900" y="748" class="box-label">[E] Verifier / Critic Agent (deterministic)</text>
+  <text x="900" y="762" class="box-detail" font-weight="700" fill="#C55A11">TRUST BOUNDARY. Gate before any answer reaches the user.</text>
+  <text x="900" y="780" class="box-detail">Checks: (1) periods align with question  (2) GAAP tag consistent</text>
+  <text x="900" y="796" class="box-detail">        (3) no null values  (4) computed value in sanity band</text>
+  <text x="900" y="812" class="box-detail">        (5) canonicalization ambiguity flags  (6) restated figures</text>
+  <text x="900" y="830" class="box-detail" font-style="italic">On failure: return insufficient_data honestly, not a best guess.</text>
+
+  <!-- Arrow -->
+  <line x1="1130" y1="840" x2="1130" y2="877" class="arrow-flow" marker-end="url(#arrow)"/>
+
+  <!-- [F] Answer Composer -->
+  <rect x="880" y="880" width="500" height="90" rx="4" class="box-llm"/>
+  <text x="900" y="904" class="box-label">[F] Answer Composer (LLM)</text>
+  <text x="900" y="924" class="box-detail">Narrates a fluent response using ONLY the pre-verified facts.</text>
+  <text x="900" y="942" class="box-detail">Cannot hallucinate values (no filing content in context) or introduce</text>
+  <text x="900" y="960" class="box-detail">arithmetic errors (no calculation to perform).</text>
+
+  <!-- Arrow -->
+  <line x1="1130" y1="970" x2="1130" y2="1007" class="arrow-flow" marker-end="url(#arrow)"/>
+
+  <!-- Response Payload -->
+  <rect x="880" y="1010" width="500" height="110" rx="4" class="box-io"/>
+  <text x="1130" y="1034" text-anchor="middle" class="io-label">Response Payload</text>
+  <text x="900" y="1058" class="box-detail-mono">{ answer_text,</text>
+  <text x="900" y="1074" class="box-detail-mono">  raw_facts[] with provenance,</text>
+  <text x="900" y="1090" class="box-detail-mono">  computation_expression,</text>
+  <text x="900" y="1106" class="box-detail-mono">  warnings[], citations[], confidence }</text>
+
+  <!-- =============== CROSS-PIPELINE ARROW: Fact Store -> Retrievers =============== -->
+  <path d="M 650 875 C 720 875, 720 483, 875 483"
+        class="arrow-cross"
+        marker-end="url(#arrow-blue)"/>
+  <text x="700" y="720" text-anchor="middle" class="flow-label" fill="#1F4E79" font-weight="700">
+    Fact Store feeds
+  </text>
+  <text x="700" y="734" text-anchor="middle" class="flow-label" fill="#1F4E79" font-weight="700">
+    both retrievers
+  </text>
+
+  <!-- =============== LEGEND =============== -->
+  <line x1="60" y1="1170" x2="1440" y2="1170" class="divider"/>
+  <text x="60" y="1195" class="legend-title">Legend</text>
+
+  <!-- LLM stage -->
+  <rect x="60" y="1210" width="30" height="20" rx="2" class="box-llm"/>
+  <text x="100" y="1225" class="legend-label">LLM stage (natural language understanding or generation)</text>
+
+  <!-- Deterministic stage -->
+  <rect x="60" y="1240" width="30" height="20" rx="2" class="box-deterministic"/>
+  <text x="100" y="1255" class="legend-label">Deterministic stage (SQL, Python arithmetic, vector search)</text>
+
+  <!-- Data store -->
+  <rect x="60" y="1270" width="30" height="20" rx="2" class="box-datastore"/>
+  <text x="100" y="1285" class="legend-label">Data store (canonical fact store, produced offline, queried online)</text>
+
+  <!-- Trust boundary -->
+  <rect x="60" y="1300" width="30" height="20" rx="2" class="box-trust"/>
+  <text x="100" y="1315" class="legend-label">Trust boundary (Verifier / Critic. Fails closed on any inconsistency.)</text>
+
+  <!-- Input/Output -->
+  <path d="M 60 1330 L 82 1330 L 90 1340 L 82 1350 L 60 1350 L 68 1340 Z" class="box-io"/>
+  <text x="100" y="1345" class="legend-label">Input or Output (user question, PDF filing, response payload)</text>
+
+  <!-- Arrow legends (moved to left column) -->
+  <line x1="380" y1="1220" x2="420" y2="1220" class="arrow-flow" marker-end="url(#arrow)"/>
+  <text x="430" y="1225" class="legend-label">Data flow within a pipeline</text>
+
+  <line x1="380" y1="1250" x2="420" y2="1250" class="arrow-cross" marker-end="url(#arrow-blue)"/>
+  <text x="430" y="1255" class="legend-label">Cross-pipeline flow (offline output feeds online)</text>
+
+  <!-- =============== DESIGN PRINCIPLES BOX =============== -->
+  <rect x="700" y="1180" width="740" height="180" fill="#F8F8F8" stroke="#CCCCCC" stroke-width="1"/>
+  <text x="720" y="1203" class="legend-title">Three design principles this diagram encodes</text>
+
+  <text x="720" y="1228" class="box-detail" font-weight="700">1. Structure the corpus once, query the structure.</text>
+  <text x="740" y="1246" class="box-detail">Offline pipeline pays the interpretation cost. Online pipeline benefits from typed facts.</text>
+
+  <text x="720" y="1272" class="box-detail" font-weight="700">2. Use each tool for what it is actually good at.</text>
+  <text x="740" y="1290" class="box-detail">LLM for NLU/NLG. SQL for numeric lookup. Python for arithmetic. Embeddings for prose only.</text>
+
+  <text x="720" y="1316" class="box-detail" font-weight="700">3. Every answer is verifiable at the source.</text>
+  <text x="740" y="1334" class="box-detail">Provenance travels with every fact through every stage. Trust boundary fails closed.</text>
+
+  <!-- =============== FOOTER =============== -->
+  <text x="750" y="1420" text-anchor="middle" class="title-sub">
+    Prepared by Scott Josephson  |  Deloitte Agentic AI Engineer take-home  |  SEC Filing Intelligence prototype
+  </text>
+
+</svg>
