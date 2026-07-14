@@ -133,7 +133,18 @@ CANONICAL_METRICS: List[CanonicalMetric] = [
         metric_id="METRIC_NET_INCOME",
         display_name="Net income",
         statement="income_stmt",
-        known_labels=["Net income", "Net income (loss)", "Net earnings", "earnings"],
+        # Bare "profit" added after a real live-tested gap: "Tesla's
+        # change in profit" did not resolve, even though bare "profit" in
+        # everyday financial usage means the bottom line (net income),
+        # not gross or operating profit -- those are always said with
+        # their qualifying word ("gross profit", "operating profit", the
+        # latter already a known_label for METRIC_OPERATING_INCOME
+        # above). Safe: no raw label extracted from any filing in this
+        # corpus is bare "profit" (confirmed by direct query), only
+        # qualified variants like "Gross profit total automotive", so
+        # this can never collide with an actual filing's own label text
+        # the way "Automotive sales" did.
+        known_labels=["Net income", "Net income (loss)", "Net earnings", "earnings", "profit"],
     ),
     CanonicalMetric(
         metric_id="METRIC_NET_INCOME_ATTRIBUTABLE_COMMON",

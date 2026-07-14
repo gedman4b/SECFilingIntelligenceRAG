@@ -76,6 +76,15 @@ def test_net_income_and_attributable_variant_never_collide():
     assert b == "METRIC_NET_INCOME_ATTRIBUTABLE_COMMON"
 
 
+def test_bare_profit_never_collides_with_gross_or_operating_profit():
+    """Bare "profit" colloquially means the bottom line (net income) in
+    everyday financial usage, but real filings always qualify gross and
+    operating profit explicitly -- these three must stay distinct."""
+    assert resolve_canonical_metric("profit") == "METRIC_NET_INCOME"
+    assert resolve_canonical_metric("Gross profit") == "METRIC_GROSS_PROFIT"
+    assert resolve_canonical_metric("operating profit") == "METRIC_OPERATING_INCOME"
+
+
 def test_registry_collision_raises_at_build_time():
     """Two different metrics claiming the same normalized label is a
     registry authoring bug and must fail loudly, not silently pick one."""
@@ -161,6 +170,7 @@ def test_canonicalize_facts_disambiguates_basic_by_units():
     ("basic earnings per share", "METRIC_EPS_BASIC"),
     ("SG&A", "METRIC_SGA"),
     ("Selling, general and administrative", "METRIC_SGA"),
+    ("profit", "METRIC_NET_INCOME"),
 ])
 def test_full_phrase_labels_resolve_without_units(label, expected_metric_id):
     """A user's natural-language question ('Tesla's diluted EPS') supplies
