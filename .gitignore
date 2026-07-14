@@ -4,3 +4,4 @@ pdfs/
 .venv/
 .env*
 .vercel
+AGENTS.md
