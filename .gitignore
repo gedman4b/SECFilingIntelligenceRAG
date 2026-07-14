@@ -5,3 +5,4 @@ pdfs/
 .env*
 .vercel
 AGENTS.md
+REQUIREMENTS_TRACEABILITY.md
