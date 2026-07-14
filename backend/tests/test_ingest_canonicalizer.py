@@ -1,9 +1,13 @@
-"""Tests for ingest/canonicalizer.py. Purely deterministic, no LLM."""
+"""Tests for ingest/canonicalizer.py. Deterministic, except for the
+last-resort LLM-assisted synonym tier (resolve_canonical_metric_via_llm),
+which every test that exercises it mocks at the Anthropic client
+boundary, per AGENTS.md."""
 
 from __future__ import annotations
 
 import pytest
 
+from app.ingest import canonicalizer
 from app.ingest.canonicalizer import (
     UNRESOLVED_METRIC_ID,
     CanonicalMetric,
@@ -15,8 +19,10 @@ from app.ingest.canonicalizer import (
     expense_metric_ids,
     normalize_label,
     resolve_canonical_metric,
+    resolve_canonical_metric_via_llm,
 )
 from app.ingest.fact_extractor import ExtractedFact
+from tests.conftest import make_mock_tool_use_response
 
 
 # =============================================================================
@@ -259,3 +265,60 @@ def test_normalize_label_is_public_wrapper_around_the_same_rule():
     assert normalize_label("  Energy Generation and Storage Segment Revenue  ") == \
         _normalize_label("  Energy Generation and Storage Segment Revenue  ")
     assert normalize_label("Foo (1)") == "foo"
+
+
+# =============================================================================
+# resolve_canonical_metric_via_llm: the last-resort, query-time-only
+# synonym fallback. Closed-set classification against the existing
+# registry, not fuzzy/embedding matching -- see the function's own
+# docstring for the full reasoning. Every test mocks the Anthropic
+# client; none of these make a real API call.
+# =============================================================================
+
+def test_llm_resolution_returns_a_valid_registry_id(monkeypatch):
+    monkeypatch.setattr(
+        canonicalizer._client.messages, "create",
+        lambda **kw: make_mock_tool_use_response("submit_metric_match", {"metric_id": "METRIC_NET_INCOME"}),
+    )
+    assert resolve_canonical_metric_via_llm("profit") == "METRIC_NET_INCOME"
+
+
+def test_llm_resolution_respects_an_explicit_null(monkeypatch):
+    """The model declining to guess (rule 2 of its own system prompt:
+    genuinely ambiguous or no clear match) must be honored, not treated
+    as a parsing failure."""
+    monkeypatch.setattr(
+        canonicalizer._client.messages, "create",
+        lambda **kw: make_mock_tool_use_response("submit_metric_match", {"metric_id": None}),
+    )
+    assert resolve_canonical_metric_via_llm("margin") is None
+
+
+def test_llm_resolution_rejects_a_hallucinated_id_not_in_the_registry(monkeypatch):
+    """Fail closed on an unvalidated model output, the same discipline
+    every other stage in this system applies: a plausible-looking but
+    fake id must never be trusted just because the model said it."""
+    monkeypatch.setattr(
+        canonicalizer._client.messages, "create",
+        lambda **kw: make_mock_tool_use_response("submit_metric_match", {"metric_id": "METRIC_TOTALLY_MADE_UP"}),
+    )
+    assert resolve_canonical_metric_via_llm("some phrase") is None
+
+
+def test_llm_resolution_fails_closed_on_api_error(monkeypatch):
+    def raise_error(**kw):
+        raise RuntimeError("connection failed")
+    monkeypatch.setattr(canonicalizer._client.messages, "create", raise_error)
+    assert resolve_canonical_metric_via_llm("profit") is None
+
+
+def test_llm_resolution_never_returns_an_id_outside_all_metric_ids(monkeypatch):
+    """Structural guard: whatever the mocked model returns, the result
+    must always be a member of the real registry or None -- there is no
+    third outcome."""
+    monkeypatch.setattr(
+        canonicalizer._client.messages, "create",
+        lambda **kw: make_mock_tool_use_response("submit_metric_match", {"metric_id": "METRIC_NET_INCOME"}),
+    )
+    result = resolve_canonical_metric_via_llm("profit")
+    assert result is None or result in set(all_metric_ids())

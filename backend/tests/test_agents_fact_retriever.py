@@ -1,11 +1,18 @@
-"""Tests for agents/fact_retriever.py. Deterministic, no LLM: retrieve_facts()
-calls store.db.get_conn() with no path argument, so these tests point it at
-a temp file via the FACT_STORE_DB_PATH env var rather than the real store."""
+"""Tests for agents/fact_retriever.py. retrieve_facts() calls
+store.db.get_conn() with no path argument, so these tests point it at a
+temp file via the FACT_STORE_DB_PATH env var rather than the real store.
+
+Deterministic except for the last-resort LLM-assisted synonym tier
+(resolve_canonical_metric_via_llm, imported from ingest/canonicalizer.py):
+any test that could reach it mocks it explicitly, per AGENTS.md ("No test
+that requires network access to a live LLM provider runs in the default
+suite")."""
 
 from __future__ import annotations
 
 import pytest
 
+from app.agents import fact_retriever
 from app.agents.fact_retriever import (
     resolve_preferred_facts, retrieve_facts, retrieve_ranking_facts, retrieve_ratio_facts,
 )
@@ -205,10 +212,14 @@ def test_retrieve_facts_falls_back_to_raw_label_when_unresolved(seeded_conn):
     assert facts[0].ambiguity_flags  # carries the unresolved flag through
 
 
-def test_retrieve_facts_raw_label_fallback_is_exact_match_not_fuzzy(seeded_conn):
-    """A near-miss phrase must not match -- no fuzzy or embedding matching
-    on the numeric path, per the write-up's ban on embeddings for
-    numeric queries."""
+def test_retrieve_facts_raw_label_fallback_is_exact_match_not_fuzzy(seeded_conn, monkeypatch):
+    """A near-miss phrase must not match at the raw-label tier -- no
+    fuzzy or embedding matching on the numeric path, per the write-up's
+    ban on embeddings for numeric queries. The LLM-assisted tier is
+    mocked to also decline here (a plausible, honest outcome for this
+    phrase), so this test is hermetic and doesn't depend on what a real
+    model call would return."""
+    monkeypatch.setattr(fact_retriever, "resolve_canonical_metric_via_llm", lambda phrase: None)
     insert_fact(seeded_conn, _fact(
         metric_canonical_id="UNRESOLVED",
         metric_raw_label="Digital assets",
@@ -220,6 +231,88 @@ def test_retrieve_facts_raw_label_fallback_is_exact_match_not_fuzzy(seeded_conn)
         periods=[Period(year=2025)],
     )
     assert retrieve_facts(plan) == []
+
+
+def test_retrieve_facts_falls_back_to_llm_synonym_when_raw_label_also_misses(seeded_conn, monkeypatch):
+    """The real class of bug this tier exists for: a colloquial phrase
+    like "the bottom line" resolves to nothing at tier 1 (not a curated
+    synonym) and nothing at tier 2 (no filing literally uses that raw
+    label), so tier 3 is the only way this question can be answered at
+    all. Mocked here to isolate fact_retriever's own wiring from the
+    model's actual judgment (that's ingest/canonicalizer.py's test
+    surface instead)."""
+    monkeypatch.setattr(fact_retriever, "resolve_canonical_metric_via_llm", lambda phrase: "METRIC_NET_INCOME")
+    insert_fact(seeded_conn, _fact(
+        metric_canonical_id="METRIC_NET_INCOME", metric_raw_label="Net income", value=3855.0,
+    ))
+    plan = QueryPlan(
+        question_type=QuestionType.NUMERIC_LOOKUP, company_ticker="TSLA",
+        metric_natural_language="the bottom line",
+        periods=[Period(year=2025)],
+    )
+    facts = retrieve_facts(plan)
+    assert len(facts) == 1
+    assert facts[0].value == 3855.0
+
+
+def test_llm_synonym_match_is_flagged_ambiguous_not_silently_trusted(seeded_conn, monkeypatch):
+    """A match found via the LLM-assisted tier must never look as
+    trustworthy as an exact registry match -- the Verifier's Check 6
+    downgrades confidence based on exactly this flag."""
+    monkeypatch.setattr(fact_retriever, "resolve_canonical_metric_via_llm", lambda phrase: "METRIC_NET_INCOME")
+    insert_fact(seeded_conn, _fact(
+        metric_canonical_id="METRIC_NET_INCOME", metric_raw_label="Net income", value=3855.0,
+    ))
+    plan = QueryPlan(
+        question_type=QuestionType.NUMERIC_LOOKUP, company_ticker="TSLA",
+        metric_natural_language="the bottom line",
+        periods=[Period(year=2025)],
+    )
+    facts = retrieve_facts(plan)
+    assert len(facts) == 1
+    assert any("llm_synonym_match" in flag for flag in facts[0].ambiguity_flags)
+
+
+def test_llm_synonym_tier_never_called_when_exact_match_already_succeeded(seeded_conn, monkeypatch):
+    """Cost and latency guard as much as a correctness one: the LLM tier
+    must only run as a last resort, never when a cheaper deterministic
+    tier already resolved the metric."""
+    was_called = []
+    monkeypatch.setattr(
+        fact_retriever, "resolve_canonical_metric_via_llm",
+        lambda phrase: was_called.append(phrase) or "METRIC_NET_INCOME",
+    )
+    insert_fact(seeded_conn, _fact(
+        metric_canonical_id="METRIC_NET_INCOME", metric_raw_label="Net income", value=3855.0,
+    ))
+    plan = QueryPlan(
+        question_type=QuestionType.NUMERIC_LOOKUP, company_ticker="TSLA",
+        metric_natural_language="net income",  # resolves at tier 1
+        periods=[Period(year=2025)],
+    )
+    retrieve_facts(plan)
+    assert was_called == []
+
+
+def test_retrieve_ratio_facts_uses_llm_synonym_tier_for_either_side(seeded_conn, monkeypatch):
+    """margin_calc's numerator and denominator are each resolved through
+    the same three-tier cascade independently."""
+    def fake_llm(phrase):
+        return {"the bottom line": "METRIC_NET_INCOME", "top line": "METRIC_TOTAL_REVENUE"}.get(phrase)
+    monkeypatch.setattr(fact_retriever, "resolve_canonical_metric_via_llm", fake_llm)
+    insert_fact(seeded_conn, _fact(
+        row_id=1, metric_canonical_id="METRIC_NET_INCOME", metric_raw_label="Net income", value=3855.0,
+    ))
+    insert_fact(seeded_conn, _fact(row_id=2, value=94827.0))  # METRIC_TOTAL_REVENUE
+    plan = QueryPlan(
+        question_type=QuestionType.MARGIN_CALC, company_ticker="TSLA",
+        metric_natural_language="the bottom line",
+        ratio_denominator_natural_language="top line",
+        periods=[Period(year=2025)],
+    )
+    numerator, denominator = retrieve_ratio_facts(plan)
+    assert len(numerator) == 1 and numerator[0].value == 3855.0
+    assert len(denominator) == 1 and denominator[0].value == 94827.0
 
 
 def test_retrieve_facts_does_not_fall_back_when_canonical_id_resolves_but_has_no_data(seeded_conn):

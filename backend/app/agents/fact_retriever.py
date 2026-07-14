@@ -1,10 +1,16 @@
-# Deterministic. No LLM. This is the stage that prevents hallucination by construction.
+# Deterministic query and retrieval logic. The one exception, and the
+# only LLM call anywhere in this module, is the last-resort synonym
+# fallback in _resolve_metric_facts() -- see resolve_canonical_metric_via_llm()'s
+# docstring in ingest/canonicalizer.py for why that's a different, safer
+# mechanism than embeddings rather than a violation of "numeric queries
+# never use embeddings."
 import logging
 
 from app.schemas import QueryPlan, Fact, Period
 from app.store.db import get_conn
 from app.ingest.canonicalizer import (
-    resolve_canonical_metric, all_metric_ids, expense_metric_ids, normalize_label,
+    resolve_canonical_metric, resolve_canonical_metric_via_llm,
+    all_metric_ids, expense_metric_ids, normalize_label,
 )
 from app.instrumentation import log_latency
 from typing import Dict, List, Optional, Tuple
@@ -202,45 +208,80 @@ def _retrieve_facts_by_raw_label(
     return results
 
 
+def _resolve_metric_facts(
+    canonical_id: Optional[str],
+    natural_language: Optional[str],
+    company_ticker: Optional[str],
+    periods: List[Period],
+    gaap_preference: str,
+) -> List[Fact]:
+    """Three-tier metric resolution shared by retrieve_facts() (single
+    metric) and retrieve_ratio_facts() (numerator and denominator, each
+    resolved independently through this same cascade):
+
+    1. Exact canonical match (resolve_canonical_metric) -- deterministic,
+       free, the common case.
+    2. The raw-label fallback (_retrieve_facts_by_raw_label) -- still
+       exact-match, just against facts' own stored raw labels instead of
+       the curated registry, for metrics like a business-segment
+       breakdown with no registry entry at all.
+    3. LLM-assisted synonym resolution (resolve_canonical_metric_via_llm)
+       -- the last resort, only reached when both deterministic tiers
+       above found nothing. Closed-set classification against the same
+       registry, not fuzzy/embedding matching; see that function's
+       docstring. Any match found this way is flagged as ambiguous on
+       every returned Fact, so the Verifier downgrades confidence exactly
+       like it already does for the raw-label fallback -- this tier never
+       gets to claim the same certainty as an exact match.
+
+    A canonical id that resolved but simply has no facts for the
+    requested period does NOT fall through to tiers 2/3: that is a real
+    "no data" case the Verifier must fail closed on, not a label-matching
+    problem.
+    """
+    metric_id = canonical_id
+    if not metric_id and natural_language:
+        metric_id = resolve_canonical_metric(natural_language)
+
+    if metric_id:
+        return _retrieve_facts_for_metric(company_ticker, metric_id, periods, gaap_preference)
+
+    if not natural_language:
+        return []
+
+    results = _retrieve_facts_by_raw_label(company_ticker, natural_language, periods, gaap_preference)
+    if results:
+        return results
+
+    llm_metric_id = resolve_canonical_metric_via_llm(natural_language)
+    if not llm_metric_id:
+        return []
+
+    results = _retrieve_facts_for_metric(company_ticker, llm_metric_id, periods, gaap_preference)
+    flag = (
+        f"llm_synonym_match: {natural_language!r} matched to {llm_metric_id} via "
+        f"LLM-assisted synonym resolution, not an exact registry match"
+    )
+    for f in results:
+        f.ambiguity_flags = f.ambiguity_flags + [flag]
+    return results
+
+
 @log_latency(log)
 def retrieve_facts(plan: QueryPlan) -> List[Fact]:
     if not plan.metric_canonical_id and not plan.metric_natural_language:
         return []
 
-    # Resolve canonical ID if needed
-    metric_id = plan.metric_canonical_id
-    if not metric_id and plan.metric_natural_language:
-        metric_id = resolve_canonical_metric(plan.metric_natural_language)
-
-    if metric_id:
-        results = _retrieve_facts_for_metric(
-            plan.company_ticker, metric_id, plan.periods, plan.gaap_preference,
-        )
-        log.info(
-            "plan(company=%s, metric=%s, periods=%d) -> %d facts",
-            plan.company_ticker, metric_id, len(plan.periods), len(results),
-        )
-        return results
-
-    # metric_natural_language did not resolve against the canonical
-    # registry at all (metric_id is still None) -- try the deterministic
-    # raw-label fallback before giving up. Only reached when there was
-    # never a canonical id to begin with; a canonical id that resolved but
-    # simply has no facts for the requested period is NOT retried here,
-    # since that's a real "no data" case the Verifier must fail closed on,
-    # not a segment-label mismatch.
-    if plan.metric_natural_language:
-        results = _retrieve_facts_by_raw_label(
-            plan.company_ticker, plan.metric_natural_language, plan.periods, plan.gaap_preference,
-        )
-        log.info(
-            "plan(company=%s, metric=%r, periods=%d) -> canonical registry miss, "
-            "raw-label fallback -> %d facts",
-            plan.company_ticker, plan.metric_natural_language, len(plan.periods), len(results),
-        )
-        return results
-
-    return []
+    results = _resolve_metric_facts(
+        plan.metric_canonical_id, plan.metric_natural_language,
+        plan.company_ticker, plan.periods, plan.gaap_preference,
+    )
+    log.info(
+        "plan(company=%s, metric=%s or %r, periods=%d) -> %d facts",
+        plan.company_ticker, plan.metric_canonical_id, plan.metric_natural_language,
+        len(plan.periods), len(results),
+    )
+    return results
 
 
 @log_latency(log)
@@ -258,26 +299,18 @@ def retrieve_ratio_facts(plan: QueryPlan) -> Tuple[List[Fact], List[Fact]]:
         (main.py) is responsible for treating that as insufficient_data,
         same as retrieve_facts() returning [].
     """
-    numerator_id = plan.metric_canonical_id
-    if not numerator_id and plan.metric_natural_language:
-        numerator_id = resolve_canonical_metric(plan.metric_natural_language)
-
-    denominator_id = plan.ratio_denominator_canonical_id
-    if not denominator_id and plan.ratio_denominator_natural_language:
-        denominator_id = resolve_canonical_metric(plan.ratio_denominator_natural_language)
-
-    numerator_facts = (
-        _retrieve_facts_for_metric(plan.company_ticker, numerator_id, plan.periods, plan.gaap_preference)
-        if numerator_id else []
+    numerator_facts = _resolve_metric_facts(
+        plan.metric_canonical_id, plan.metric_natural_language,
+        plan.company_ticker, plan.periods, plan.gaap_preference,
     )
-    denominator_facts = (
-        _retrieve_facts_for_metric(plan.company_ticker, denominator_id, plan.periods, plan.gaap_preference)
-        if denominator_id else []
+    denominator_facts = _resolve_metric_facts(
+        plan.ratio_denominator_canonical_id, plan.ratio_denominator_natural_language,
+        plan.company_ticker, plan.periods, plan.gaap_preference,
     )
     log.info(
-        "plan(company=%s, numerator=%s, denominator=%s, periods=%d) -> %d/%d facts",
-        plan.company_ticker, numerator_id, denominator_id, len(plan.periods),
-        len(numerator_facts), len(denominator_facts),
+        "plan(company=%s, numerator=%r, denominator=%r, periods=%d) -> %d/%d facts",
+        plan.company_ticker, plan.metric_natural_language, plan.ratio_denominator_natural_language,
+        len(plan.periods), len(numerator_facts), len(denominator_facts),
     )
     return numerator_facts, denominator_facts
 

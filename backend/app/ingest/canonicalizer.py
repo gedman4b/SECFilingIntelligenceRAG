@@ -6,26 +6,44 @@ fixed canonical metric registry.
 
 Design principle
 -----------------
-This module is intentionally not an LLM stage, unlike table_classifier.py
-and fact_extractor.py. agents/fact_retriever.py calls
-resolve_canonical_metric() directly from the online query path, and the
-Fact Retriever is a declared LLM-free, deterministic stage (Part 4 of the
-write-up: "It is a database query... Wrapping a database query in an LLM
-adds cost, latency, and hallucination risk"). A canonicalizer that used an
-LLM, or any fuzzy/substring matching, would smuggle exactly the kind of
-near-miss ambiguity embeddings are banned from the numeric path for back
-in through a side door: "Net income" and "Net income attributable to
-common stockholders" must never collapse into one canonical ID (Part 1 of
-the write-up, Part 3 Guard 1).
+Ingestion-time canonicalization (canonicalize_label(), canonicalize_facts())
+is fully deterministic and stays that way: exact-match-after-normalization
+against a curated registry (Part 3 of the write-up: "Raw labels are mapped
+to a canonical metric registry"). A raw filing label that is not an exact
+match, after normalizing case, whitespace, curly quotes, and footnote
+markers, is left unresolved and flagged rather than guessed (Part 3 Guard
+2). Facts with an unresolved metric are still stored, per the write-up, so
+the Verifier can surface the uncertainty instead of the fact silently
+disappearing. This path is deliberately never LLM-assisted: fact_extractor.py
+already used an LLM to read the label off the page, and this stage exists
+specifically as the deterministic cross-check on that -- an LLM guess here
+too would remove the check rather than add one.
 
-So resolution here is exact-match-after-normalization against a curated
-registry (Part 3 of the write-up: "Raw labels are mapped to a canonical
-metric registry"). A label that is not an exact match, after normalizing
-case, whitespace, curly quotes, and footnote markers, is left unresolved
-and flagged rather than guessed (Part 3 Guard 2: "the metric canonicalizer
-... emits an ambiguity_flag rather than force-mapping"). Facts with an
-unresolved metric are still stored, per the write-up, so the Verifier can
-surface the uncertainty instead of the fact silently disappearing.
+Query-time resolution (resolve_canonical_metric(), called from
+agents/fact_retriever.py) is a different situation: a user's natural-
+language phrase ("Tesla's profit") frequently isn't the filing's own
+label text ("Net income") at all, so exact-match-only resolution left
+real, answerable questions failing closed for want of a curated synonym
+-- confirmed repeatedly via live testing ("revenue from car sales" vs.
+"Automotive sales", "profit" vs. "Net income"). resolve_canonical_metric_via_llm()
+is the fix, and it is deliberately NOT the same thing Part 1 / Part 3
+Guard 1 bans embeddings from doing. Guard 1's concern is a *continuous*
+similarity search that always returns its nearest neighbor, ranked by
+distance, with no way to say "none of these" -- exactly how "Net income"
+and "Net income attributable to common stockholders" would embed as
+near-identical vectors despite being different dollar figures. This
+function instead does closed-set *classification*: the model picks
+from the exact, already-curated list of metric ids (the same registry
+below) or declines, its answer is validated against that list before
+being trusted (a hallucinated id is treated as no match), and it only
+runs as a last resort after both the exact match and the raw-label
+fallback have already failed. It is closer in kind to what the Query
+Planner already does (LLM extracts structured intent from open-ended
+text, validated by Pydantic afterward) than to embedding-based nearest-
+neighbor search. Every match found this way is still flagged as
+ambiguous by the caller, downgrading confidence exactly like the
+raw-label fallback already does -- this fills a real gap without
+silently claiming more certainty than a curated exact match earns.
 
 The registry below is grounded in labels actually observed in the real
 Tesla and Apple filings in ingest/pdfs/, not guessed: "Total revenues"
@@ -47,12 +65,14 @@ import logging
 import re
 from typing import Dict, List, Optional
 
+import anthropic
 from pydantic import BaseModel, Field
 
 from app.ingest.fact_extractor import ExtractedFact
 from app.store.db import FactRecord
 
 log = logging.getLogger(__name__)
+_client = anthropic.Anthropic()
 
 # Sentinel canonical id for a fact whose label did not match the registry.
 # Never a real metric_id, so a query for an actual metric can never
@@ -493,6 +513,115 @@ def resolve_canonical_metric(raw_label: str, units: Optional[str] = None) -> Opt
         The canonical metric id, or None if unresolved.
     """
     return canonicalize_label(raw_label, units).metric_canonical_id
+
+
+_SYNONYM_RESOLUTION_SYSTEM_PROMPT = '''You match a natural-language financial term to ONE canonical metric from a fixed list, or to none of them.
+
+Rules:
+1. You may ONLY return a metric_id that appears in the list below, or null. Never invent an id that is not listed.
+2. Return null if the phrase is genuinely ambiguous between two or more listed metrics, or does not clearly refer to any single one of them. A vague, unqualified term that could plausibly mean several different listed metrics (e.g. "margin" alone, which could be gross, operating, or net margin) must return null, not a guess.
+3. A colloquial or informal term should resolve to whichever listed metric it conventionally refers to in everyday financial usage (e.g. "profit" or "the bottom line" conventionally means net income, "the top line" conventionally means revenue) -- but only when that convention is genuinely unambiguous, per rule 2.
+4. Never let an unqualified term collapse into a qualified metric, or vice versa. If the list has separate entries for a metric and a more specific qualified version of it (e.g. a plain profit/income metric versus one scoped to "attributable to common stockholders", or versus "operating" or "gross" specifically), an unqualified query must resolve to the unqualified metric and must never match the qualified one, and a qualified query must never match the unqualified metric.
+'''
+
+_metric_ids_cache: Optional[set] = None
+
+
+def _valid_metric_ids() -> set:
+    global _metric_ids_cache
+    if _metric_ids_cache is None:
+        _metric_ids_cache = set(all_metric_ids())
+    return _metric_ids_cache
+
+
+def _build_registry_description() -> str:
+    lines = []
+    for m in CANONICAL_METRICS:
+        examples = ", ".join(repr(l) for l in m.known_labels[:3])
+        lines.append(f"- {m.metric_id}: {m.display_name} (e.g. {examples})")
+    return "\n".join(lines)
+
+
+_SYNONYM_TOOL = {
+    'name': 'submit_metric_match',
+    'description': 'Submit which canonical metric, if any, the phrase refers to.',
+    'input_schema': {
+        'type': 'object',
+        'properties': {
+            'metric_id': {
+                'type': ['string', 'null'],
+                'description': 'One of the listed metric ids, or null if none clearly and unambiguously match.',
+            },
+        },
+        'required': ['metric_id'],
+    },
+}
+
+
+def resolve_canonical_metric_via_llm(natural_language_phrase: str) -> Optional[str]:
+    """Last-resort, query-time-only fallback when a phrase matched
+    nothing in the deterministic registry (resolve_canonical_metric())
+    and nothing via the raw-label fallback
+    (agents/fact_retriever._retrieve_facts_by_raw_label()).
+
+    See the module docstring for why this is a different, safer
+    mechanism than embeddings despite also being "AI-assisted": this is
+    closed-set classification over the already-curated registry, not
+    open-ended similarity search. The model's answer is validated
+    against the real registry before being trusted at all.
+
+    Deliberately not used by canonicalize_label()/canonicalize_facts()
+    (the ingestion-time, raw-filing-label path), which stays fully
+    deterministic -- see the module docstring.
+
+    Args:
+        natural_language_phrase: Text that already failed exact-match
+            canonical resolution and the raw-label fallback, e.g.
+            "profit" or "revenue from car sales".
+
+    Returns:
+        A canonical metric id if the model picked one AND it is a real,
+        currently-registered id, otherwise None. A hallucinated id (not
+        in the registry) is treated identically to an explicit null --
+        fail closed, never trust an unvalidated model output.
+
+    Callers MUST treat a non-None result as an ambiguous match, not an
+    exact one -- e.g. by adding an ambiguity_flag to the resulting
+    Fact(s) so the Verifier's Check 6 downgrades confidence, the same
+    honest-uncertainty treatment the raw-label fallback already gets.
+    This function has no access to a Fact object and does not do that
+    itself; see agents/fact_retriever.py's caller.
+    """
+    system_prompt = (
+        f"{_SYNONYM_RESOLUTION_SYSTEM_PROMPT}\n\nCanonical metrics:\n{_build_registry_description()}"
+    )
+    try:
+        response = _client.messages.create(
+            model='claude-sonnet-4-5',
+            max_tokens=200,
+            system=system_prompt,
+            tools=[_SYNONYM_TOOL],
+            tool_choice={'type': 'tool', 'name': 'submit_metric_match'},
+            messages=[{'role': 'user', 'content': natural_language_phrase}],
+        )
+        tool_use = next(b for b in response.content if b.type == 'tool_use')
+        metric_id = tool_use.input.get('metric_id')
+    except Exception as e:
+        # Fail closed: no match instead of guessing, same as every other
+        # stage in this system when an LLM call errors.
+        log.warning("LLM synonym resolution failed for %r: %s", natural_language_phrase, e)
+        return None
+
+    if metric_id not in _valid_metric_ids():
+        if metric_id is not None:
+            log.warning(
+                "LLM synonym resolution returned an unrecognized metric_id %r for %r; treating as no match",
+                metric_id, natural_language_phrase,
+            )
+        return None
+
+    log.info("LLM synonym resolution: %r -> %s", natural_language_phrase, metric_id)
+    return metric_id
 
 
 def canonicalize_facts(
